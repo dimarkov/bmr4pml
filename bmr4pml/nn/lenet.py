@@ -87,7 +87,7 @@ class LeNet(Module):
         in_features = prod(_x.shape)
         for i, out_features in enumerate(dense_features):
             key = keys[nc + i]
-            layers += (Linear(in_features=in_features, out_features=out_features, key=key),)
+            layers += (nn.Linear(in_features=in_features, out_features=out_features, key=key),)
             in_features = out_features
 
         self.layers = layers
