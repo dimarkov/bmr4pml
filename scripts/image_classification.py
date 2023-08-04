@@ -63,7 +63,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
     try:
         results = jnp.load(f'results/{dataset_name}.npz', allow_pickle=True)['results'].item()
-        results[nn_type] = results.pop(nn_type, {})
+        results[nn_type] = results.pop(nn_type, {}) if len(methods) < 5 else {}
     except:
         results = {nn_type: {}}
 
@@ -123,7 +123,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
         results[nn_type]['Flat-MAP'] = output
         jnp.savez(f'results/{dataset_name}.npz', results=results)
 
-    tau0 = 5 * 1e-2 if nn_type == 'lenet' else 1e-2
+    tau0 = 1e-1 if nn_type == 'lenet' else 1e-2
     method_opts_reg = {
         'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
         'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
