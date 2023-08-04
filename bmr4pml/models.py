@@ -499,26 +499,28 @@ class BMRRegression(SVIRegression):
         for l in range(len(self.layers) - 1):
             name = f'layer{l}.weight'
             mu, pi = self.sufficient_stats(name, params)
-            alpha_0 = 1.
-            beta_0 = 1.
+            # alpha_0 = 1.
+            # beta_0 = 1.
 
-            def scan_fn(carry, k):
-                zeta_k, alpha_0, beta_0, _ = carry
-                df, _, _ = del_f(mu.reshape(-1), pi.reshape(-1))
-                q = nn.sigmoid( zeta_k - df.reshape(mu.shape) )
-                alpha =  q.sum() + alpha_0
-                beta = (1 - q).sum() + beta_0
-                zeta_k = zeta(alpha, beta)
-                return (zeta_k, alpha, beta, q), None
+            # def scan_fn(carry, k):
+            #     zeta_k, alpha_0, beta_0, _ = carry
+            #     df, _, _ = del_f(mu.reshape(-1), pi.reshape(-1))
+            #     q = nn.sigmoid( zeta_k - df.reshape(mu.shape) )
+            #     alpha =  q.sum() + alpha_0
+            #     beta = (1 - q).sum() + beta_0
+            #     zeta_k = zeta(alpha, beta)
+            #     return (zeta_k, alpha, beta, q), None
 
 
-            zeta_0 = zeta(alpha_0, beta_0)
-            init = (zeta_0, alpha_0, beta_0, jnp.zeros(mu.shape))
-            last, _ = lax.scan(scan_fn, init, jnp.arange(8) )
+            # zeta_0 = zeta(alpha_0, beta_0)
+            # init = (zeta_0, alpha_0, beta_0, jnp.zeros(mu.shape))
+            # last, _ = lax.scan(scan_fn, init, jnp.arange(8) )
 
-            q = last[-1]
-            prob_last = nn.sigmoid( last[0] )
-            active_weights = q > prob_last
+            # q = last[-1]
+            # prob_last = nn.sigmoid( last[0] )
+
+            df, _, _ = del_f(mu.reshape(-1), pi.reshape(-1))
+            active_weights = df.reshape(mu.shape) <= 0. # q > prob_last
 
             self.gamma[name] = self.gamma[name] * active_weights + 1e-16 * ~active_weights
         
