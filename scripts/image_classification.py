@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpyro
 import equinox as eqx
 
+from copy import deepcopy
 from math import prod
 from jax import random, nn, vmap
 
@@ -122,24 +123,21 @@ def main(dataset_name, nn_type, methods, platform, seed):
         results[nn_type]['Flat-MAP'] = output
         jnp.savez(f'results/{dataset_name}.npz', results=results)
 
+    tau0 = 5 * 1e-2 if nn_type == 'lenet' else 1e-2
     method_opts_reg = {
         'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
-        'Flat-STR': {'autoguide': 'structured', 'optim_kwargs': {'learning_rate': 1e-3}},
-        'Tiered-FF': {'tau0': 1e-2, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
-        'Tiered-STR': {'tau0': 1e-2, 'reduced': True, 'autoguide': 'structured', 'optim_kwargs': {'learning_rate': 1e-3}}
+        'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
     }
 
     method_opts_fit = {
         'Flat-FF': {'num_samples': 100, 'model_kwargs': {'batch_size': 512, 'with_hyperprior': False}},
-        'Flat-STR': {'num_samples': 100, 'model_kwargs': {'batch_size': 512, 'with_hyperprior': False}},
         'Tiered-FF': {'num_samples': 100, 'model_kwargs': {'batch_size': 512, 'with_hyperprior': True}},
-        'Tiered-STR': {'num_samples': 100, 'model_kwargs': {'batch_size': 512, 'with_hyperprior': True}}
     }
 
     # turn off dropout for Bayesian estimation
     nnet = eqx.tree_inference(nnet, value=True)
 
-    for method in ['Flat-FF', 'Flat-STR', 'Tiered-FF', 'Tiered-STR']:
+    for method in ['Flat-FF', 'Tiered-FF']:
         if method in methods:
             print(method)
             opts_regression = opts_regression | method_opts_reg[method]
@@ -161,7 +159,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
         },
         
         'BMR-RHS': {
-            'tau0': 1e-1 if nn_type == 'lenet' else 1e-2,
+            'tau0': tau0,
             'reduced': True, 
             'pruning': 'regularised-horseshoe'
         }
@@ -202,9 +200,7 @@ if __name__ == '__main__':
     default = [
         'Flat-MAP', 
         'Flat-FF',
-        'Flat-STR',
         'Tiered-FF',
-        'Tiered-STR',
         'BMR-S&S',
         'BMR-RHS'
     ]
