@@ -24,6 +24,9 @@ from .nn.vit import Params
 
 from .delta_f import *
 
+def init_fn(rng_key, shape, radius=2.):
+    return random.uniform(rng_key, shape=shape, minval=-radius, maxval=radius)
+
 @jit
 def trigamma(x):
     return grad(digamma)(x)
@@ -253,15 +256,14 @@ class SVIRegression(BayesRegression):
 
         return gamma
 
-    def matrixnormal_weight_posterior(self, name, scale, shape, **sample_kwargs):
-        loc = param(name + '.loc', lambda rng_key: random.normal(rng_key, shape=shape) / 10)
+    def matrixnormal_weight_posterior(self, name, shape, **sample_kwargs):
+        loc = param(name + '.loc', lambda rng_key: init_fn(rng_key, shape, radius=2.))
         i, j = shape
 
-        A = param(name + '.a', jnp.eye(i)/10, constraint=constraints.softplus_lower_cholesky)
-        # A = jnp.diag(a)
+        A = param(name + '.A', jnp.eye(i)/10, constraint=constraints.softplus_lower_cholesky)
         B = param(name + '.B.T', jnp.eye(j)/10, constraint=constraints.softplus_lower_cholesky)
         
-        return sample(name + '_base', dist.MatrixNormal(loc/scale, A, B), **sample_kwargs)
+        return sample(name + '_base', dist.MatrixNormal(loc, A, B), **sample_kwargs)
 
     def structured(self, *args, with_hyperprior=False, **kwargs):
         L = len(self.layers)
@@ -281,7 +283,6 @@ class SVIRegression(BayesRegression):
                 if not last:
                     x = self.matrixnormal_weight_posterior(
                         f'layer{l}.aux', 
-                        jnp.ones(1), 
                         (_i, j + 2), 
                         infer={'is_auxiliary': True}
                     )
@@ -291,7 +292,7 @@ class SVIRegression(BayesRegression):
 
                     loc = param(name + '.c^-2.loc', jnp.zeros(1))
                     scale = param(name + '.c^-2.scale', jnp.ones(1)/10, constraint=constraints.positive)
-                    c_sqr_inv = sample(name + '.c^-2', dist.LogNormal(loc, scale))
+                    sample(name + '.c^-2', dist.LogNormal(loc, scale))
 
                     if not self.reduced:
                         sample(name + '_base', dist.Delta(x[..., :i, :j], event_dim=2))
@@ -330,10 +331,10 @@ class SVIRegression(BayesRegression):
                     with handlers.block(), handlers.mask(mask=False):
                         gamma = handlers.condition(self.hyperprior, data=smpl)(name, shape, l, last=last)
                     
-                    self.matrixnormal_weight_posterior(name, jnp.broadcast_to(gamma, shape), shape)
+                    self.matrixnormal_weight_posterior(name, shape)
             else:
                 gamma = self.gamma[name]                
-                self.matrixnormal_weight_posterior(name, jnp.broadcast_to(gamma, shape), shape)
+                self.matrixnormal_weight_posterior(name, shape)
 
 
 class BMRRegression(SVIRegression):
@@ -391,25 +392,34 @@ class BMRRegression(SVIRegression):
             else:
                 self.rh_guide = AutoDelta(self.rh_model, **kwargs)
 
-    def normal_weight_posterior(self, name, sigma, shape):
-        loc = param(name + '.loc', lambda rng_key: random.normal(rng_key, shape=shape) / 10)
-        scale = param(name + '.scale', jnp.ones(shape)/10, constraint=constraints.interval(1e-8, 1.))
+    def normal_weight_posterior(self, name, shape):
+        loc = param(
+            name + '.loc', lambda rng_key: init_fn(rng_key, shape, radius=2.)
+        )
+        # scale = param(name + '.scale', jnp.ones(shape)/10, constraint=constraints.interval(1e-8, 1.5))
+        scale = param(
+            name + '.scale', jnp.full(shape, 0.1), constraint=constraints.softplus_positive
+        )
         sample(name + '_base', dist.Normal(loc, scale).to_event(2))
 
-    def multivariate_weight_posterior(self, name, sigma, shape):
-        loc = param(name + '.loc', lambda rng_key: random.normal(rng_key, shape=shape) / 10)
-        scale = param(name + '.scale', vmap(jnp.diag)(jnp.ones(shape)) / 10, constraint=constraints.softplus_lower_cholesky)
+    def multivariate_weight_posterior(self, name, shape):
+        loc = param(
+            name + '.loc', lambda rng_key: init_fn(rng_key, shape, radius=2.)
+        )
+        scale = param(
+            name + '.scale', vmap(jnp.diag)(jnp.ones(shape)) / 10, constraint=constraints.softplus_lower_cholesky
+        )
         sample(name + '_base', dist.MultivariateNormal(loc, scale_tril=scale).to_event(1))
 
-    def get_weight_posterior(self, name, sigma, shape):
+    def get_weight_posterior(self, name, shape):
         if self.posterior == 'normal':
-            return self.normal_weight_posterior(name, sigma, shape)
+            return self.normal_weight_posterior(name, shape)
 
         elif self.posterior == 'multivariate':
-            return self.multivariate_weight_posterior(name, sigma, shape)
+            return self.multivariate_weight_posterior(name, shape)
 
         elif self.posterior == 'matrixnormal':
-            return self.matrixnormal_weight_posterior(name, sigma, shape)
+            return self.matrixnormal_weight_posterior(name, shape)
 
         else:
             raise NotImplementedError
@@ -436,7 +446,7 @@ class BMRRegression(SVIRegression):
                 shape = (shape[0], shape[1] + 1)
             
             name = f'layer{l}.weight'
-            self.get_weight_posterior(name, sigma, shape)
+            self.get_weight_posterior(name, shape)
 
     def ΔF(self, mu, P, gamma, sigma_sqr=1):
         if self.posterior == 'normal':
