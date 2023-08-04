@@ -86,7 +86,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
     }
 
     rng_key, key = random.split(rng_key)
-    if nn_type == 'dense':
+    if nn_type == 'mlp':
         depth = 5
         num_neurons = 500
         rng_key, key = random.split(rng_key)
@@ -161,7 +161,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
         },
         
         'BMR-RHS': {
-            'tau0': 1e-2, # if 'mnist' in dataset_name else 1e-4, 
+            'tau0': 1e-1 if nn_type == 'lenet' else 1e-2,
             'reduced': True, 
             'pruning': 'regularised-horseshoe'
         }
@@ -194,7 +194,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Bayesian deep neural networks training")
-    parser.add_argument("-n", "--network", nargs='?', default='dense', type=str)
+    parser.add_argument("-n", "--network", nargs='?', default='mlp', type=str)
     parser.add_argument("--device", nargs='?', default='gpu', type=str)
     parser.add_argument("--seed", nargs='?', default=137, type=int)
     parser.add_argument("-ds", "--data-set", nargs='?', default='fashion_mnist', type=str)
