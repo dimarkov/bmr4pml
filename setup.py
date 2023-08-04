@@ -10,8 +10,8 @@ install_requires = \
     'optax',
     'equinox',
     'tensorflow-datasets',
-    'tensorflow-cpu',
-    'tensorflow-probabilities'
+    'tf-nightly-cpu',
+    'tfp-nightly'
 ]
 
 extras_require={
