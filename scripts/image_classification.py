@@ -50,7 +50,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
     train_ds['image'], test_ds['image'] = standardize(train_ds['image'], test_ds['image'], num_channels=num_channels)
 
-    if nn_type != 'dense' and 'mnist' in dataset_name:
+    if nn_type != 'mlp' and 'mnist' in dataset_name:
         train_ds['image'] = jnp.pad(train_ds['image'].transpose(0, 3, 1, 2), ((0, 0), (0, 0), (2, 2), (2, 2)))
         test_ds['image'] = jnp.pad(test_ds['image'].transpose(0, 3, 1, 2), ((0, 0), (0, 0), (2, 2), (2, 2)))
     else:
@@ -59,7 +59,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
     in_size = train_ds['image'].shape[-3:]
 
-    print('input size:', in_size)
+    print(nn_type, dataset_name, 'input size:', in_size)
 
     try:
         results = jnp.load(f'results/{dataset_name}.npz', allow_pickle=True)['results'].item()
@@ -123,7 +123,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
         results[nn_type]['Flat-MAP'] = output
         jnp.savez(f'results/{dataset_name}.npz', results=results)
 
-    tau0 = 1e-1 if nn_type == 'lenet' else 1e-2
+    tau0 = 5 * 1e-2 if nn_type == 'lenet' else 1e-2
     method_opts_reg = {
         'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
         'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
@@ -192,7 +192,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Bayesian deep neural networks training")
-    parser.add_argument("-n", "--network", nargs='?', default='mlp', type=str)
+    parser.add_argument("-n", "--networks", nargs='+', default=['mlp'], type=str)
     parser.add_argument("--device", nargs='?', default='gpu', type=str)
     parser.add_argument("--seed", nargs='?', default=137, type=int)
     parser.add_argument("-ds", "--data-set", nargs='?', default='fashion_mnist', type=str)
@@ -211,5 +211,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     numpyro.set_platform(args.device)
 
-    main(args.data_set, args.network, args.methods, args.device, args.seed)
+    for nn_type in args.networks:
+        main(args.data_set, nn_type, args.methods, args.device, args.seed)
 
