@@ -217,7 +217,7 @@ def fit_and_test(regression, train_ds, test_ds, opts):
         return state, params
 
     if params is not None:
-        _ = pruning(_key, params, **pruning_kwargs)
+        gammas = pruning(_key, params, **pruning_kwargs)
 
     losses = []
     results = []
@@ -238,9 +238,7 @@ def fit_and_test(regression, train_ds, test_ds, opts):
             )
             key, _key = jr.split(key)
 
-            gammas = pruning(_key, params, **pruning_kwargs)
             zip = pruned_fraction(gammas, params, **pruning_kwargs)
-
 
             cpu_params = lax.stop_gradient(device_put(params, dev2))
             cpu_gammas = lax.stop_gradient(device_put(gammas, dev2))
@@ -252,6 +250,10 @@ def fit_and_test(regression, train_ds, test_ds, opts):
             out = tests(model, cpu_samples, cpu_x_test, cpu_y_test, gammas=cpu_gammas, **test_kwargs)
             out['zip'] = zip
             results.append( out )
+
+            if i < num_epochs:
+                gammas = pruning(_key, params, **pruning_kwargs)
+
 
     results = jtu.tree_map(lambda *args: np.stack(list(args)), *tuple(results))
     results['losses'] = np.stack(losses)
