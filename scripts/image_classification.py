@@ -14,9 +14,10 @@ from math import prod
 from jax import random, nn, vmap
 
 from bmr4pml.models import SVIRegression, BMRRegression
-from bmr4pml.nn import MLP, LeNet, VisionTransformer, resnet18, resnet34, resnet50
+from bmr4pml.nn import MLP, LeNet, VisionTransformer, resnet18, MlpMixer
 from bmr4pml.datasets import load_data
 from bmr4pml.inference import fit_and_test
+from bmr4pml.nn.utils import PatchConvEmbed, PatchLinearEmbed
 
 warnings.filterwarnings('ignore')
 
@@ -63,7 +64,10 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
     try:
         results = jnp.load(f'results/{dataset_name}.npz', allow_pickle=True)['results'].item()
-        results[nn_type] = results.pop(nn_type, {}) if len(methods) < 5 else {}
+        try:
+            results[nn_type] = results.pop(nn_type, {}) if len(methods) < 5 else {}
+        except:
+            results[nn_type] = {}
     except:
         results = {nn_type: {}}
 
@@ -89,30 +93,57 @@ def main(dataset_name, nn_type, methods, platform, seed):
     rng_key, key = random.split(rng_key)
     if nn_type == 'mlp':
         depth = 5
-        num_neurons = 500
+        num_neurons = 400
         rng_key, key = random.split(rng_key)
-        nnet = MLP( prod(in_size), out_size, num_neurons, depth, activation=nn.swish, dropout_rate=0.5, key=key)
+        nnet = MLP( prod(in_size), out_size, num_neurons, depth, activation=nn.swish, dropout_rate=0.2, key=key)
     elif nn_type == 'lenet':
         rng_key, key = random.split(rng_key)
-        nnet = LeNet(in_size, activation=nn.swish, dropout_rate=0.5, key=key)
+        conv_features = [6, 16, 120] if dataset_name == 'fashion_mnist' else [18, 48, 360]
+        dense_features = [84, 10] if dataset_name == 'fashion_mnist' else [252, out_size]
+        nnet = LeNet(
+            in_size, 
+            conv_features=conv_features,
+            dense_features=dense_features,
+            activation=nn.tanh, 
+            dropout_rate=0.2, 
+            key=key
+        )
     elif nn_type == 'resnet':
         rng_key, key = random.split(rng_key)
         nnet = resnet18(num_channels=num_channels, num_classes=out_size, activation=nn.swish, key=key)
     elif nn_type == 'vit':
         rng_key, key = random.split(rng_key)
         nnet = VisionTransformer(
-                img_size = in_size[1],
-                patch_size = 8,
-                in_chans = in_size[0],
-                num_classes = out_size,
-                embed_dim = 192,
-                depth = 12,
-                num_heads = 3,
-                drop_rate = 0.0,
-                attn_drop_rate = 0.0,
-                drop_path_rate = 0.0,
+                img_size=in_size[1],
+                patch_size=4,
+                in_chans=in_size[0],
+                num_classes=out_size,
+                embed_dim=192,
+                depth=6,
+                num_heads=4,
+                mlp_ratio=4.,
+                activation=nn.gelu,
+                drop_rate=0.2,
+                attn_drop_rate=0.2,
+                drop_path_rate=0.2,
                 key = key
             )
+    
+    elif nn_type == 'mixer':
+        rng_key, key = random.split(rng_key)
+        nnet = MlpMixer(
+            img_size=in_size[1],
+            in_channels=in_size[0], 
+            patch_size=4,
+            embed_dim=128,
+            tokens_hidden_dim=256,
+            hidden_dim_ratio=3,
+            num_blocks=6,
+            num_classes=out_size,
+            activation=nn.gelu,
+            patch_embed=PatchLinearEmbed,
+            key=key
+        )
     else:
         raise NotImplementedError
 
@@ -123,7 +154,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
         results[nn_type]['Flat-MAP'] = output
         jnp.savez(f'results/{dataset_name}.npz', results=results)
 
-    tau0 = 5 * 1e-2 if nn_type == 'lenet' else 1e-2
+    tau0 = 5 * 1e-2 if nn_type == 'lenet' and dataset_name == 'fashion_mnist' else 1e-2
     method_opts_reg = {
         'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
         'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
@@ -172,11 +203,12 @@ def main(dataset_name, nn_type, methods, platform, seed):
         'model_kwargs': {'batch_size': 512, 'with_hyperprior': False}    
     }
 
-    rng_key, key = random.split(rng_key)
-    opts_regression = opts_regression | method_opts_reg['BMR-S&S']
-    state, params = run_inference(
-        key, nnet, opts_regression, opts_fitting | {'warmup_iters': 400_000}, train_ds, test_ds, reg_model=BMRRegression
-    )
+    if 'BMR-S&S' in methods or 'BMR-RHS' in methods:
+        rng_key, key = random.split(rng_key)
+        opts_regression = opts_regression | method_opts_reg['BMR-S&S']
+        state, params = run_inference(
+            key, nnet, opts_regression, opts_fitting | {'warmup_iters': 400_000}, train_ds, test_ds, reg_model=BMRRegression
+        )
 
     for method in ['BMR-S&S', 'BMR-RHS']:
         if method in methods:

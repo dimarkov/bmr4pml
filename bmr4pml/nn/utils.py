@@ -6,7 +6,7 @@ import jax.random as jrandom
 
 from jaxtyping import Array, PRNGKeyArray
 from typing import Callable, Tuple, Union, Optional
-
+from jax import lax, vmap
 
 class DropPath(eqx.Module):
     """Effectively dropping a sample from the call.
@@ -37,31 +37,40 @@ class DropPath(eqx.Module):
         self.inference = inference
         self.mode = mode
 
-    def __call__(self, x, *, key: PRNGKeyArray) -> Array:
+    def __call__(self, x, *, key: PRNGKeyArray, inference: Optional[bool] = None) -> Array:
         """**Arguments:**
 
-        - `x`: An any-dimensional JAX array to drop
+        - `x`: An any-dimensional JAX array to dropout.
         - `key`: A `jax.random.PRNGKey` used to provide randomness for calculating
             which elements to dropout. (Keyword only argument.)
+        - `inference`: As per [`equinox.nn.Dropout.__init__`][]. If `True` or
+            `False` then it will take priority over `self.inference`. If `None`
+            then the value from `self.inference` will be used.
         """
-        if self.inference or self.p == 0.0:
+
+        if inference is None:
+            inference = self.inference
+        if isinstance(self.p, (int, float)) and self.p == 0:
+            inference = True
+        if inference:
             return x
-        if key is None:
+        elif key is None:
             raise RuntimeError(
                 "DropPath requires a key when running in non-deterministic mode. Did you mean to enable inference?"
             )
-
-        keep_prob = 1 - self.p
-        if self.mode == "global":
-            noise = jrandom.bernoulli(key, p=keep_prob)
         else:
-            noise = jnp.expand_dims(
-                jrandom.bernoulli(key, p=keep_prob, shape=[x.shape[0]]).reshape(-1),
-                axis=[i for i in range(1, len(x.shape))],
-            )
-        if keep_prob > 0.0:
-            noise /= keep_prob
-        return x * noise
+            keep_prob = 1 - lax.stop_gradient(self.p)
+            if self.mode == "global":
+                noise = jrandom.bernoulli(key, p=keep_prob)
+            else:
+                noise = jnp.expand_dims(
+                    jrandom.bernoulli(key, p=keep_prob, shape=[x.shape[0]]).reshape(-1),
+                    axis=[i for i in range(1, len(x.shape))],
+                )
+            if keep_prob > 0.0:
+                noise /= keep_prob
+            
+            return x * noise
 
 
 class MlpProjection(eqx.Module):
@@ -121,27 +130,22 @@ class MlpProjection(eqx.Module):
         return x
 
 
-class PatchEmbed(eqx.Module):
-    """2D Image to Patch Embedding ported from Timm"""
+class Patch(eqx.Module):
+    """Patch Embedding settings"""
 
     img_size: Tuple[int]
     patch_size: Tuple[int]
     grid_size: Tuple[int]
     num_patches: int
     flatten: bool
-    proj: eqx.nn.Conv2d
-    norm: eqx.Module
-
+    
     def __init__(
         self,
         img_size: Union[int, Tuple[int]] = 224,
         patch_size: Union[int, Tuple[int]] = 16,
         in_chans: int = 3,
         embed_dim: int = 768,
-        norm_layer: "eqx.Module" = None,
         flatten: bool = True,
-        *,
-        key: Optional[PRNGKeyArray] = None,
     ):
         """
         **Arguments:**
@@ -150,10 +154,7 @@ class PatchEmbed(eqx.Module):
         - `patch_size`: Size of the patch to construct from the input image. Defaults to `(16, 16)`
         - `in_chans`: Number of input channels. Defaults to `3`
         - `embed_dim`: The dimension of the resulting embedding of the patch. Defaults to `768`
-        - `norm_layer`: The normalisation to be applied on an input. Defaults to None
         - `flatten`: If enabled, the `2d` patches are flattened to `1d`
-        - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
-            initialisation. (Keyword only argument.)
         """
         super().__init__()
         self.img_size = (
@@ -168,12 +169,40 @@ class PatchEmbed(eqx.Module):
         )
         self.num_patches = self.grid_size[0] * self.grid_size[1]
         self.flatten = flatten
-        if key is None:
-            key = jrandom.PRNGKey(0)
+
+
+class PatchConvEmbed(Patch):
+    """2D Image to Patch Embedding"""
+
+    proj: nn.Conv2d
+
+    def __init__(
+        self,
+        img_size: Union[int, Tuple[int]] = 224,
+        patch_size: Union[int, Tuple[int]] = 16,
+        in_chans: int = 3,
+        embed_dim: int = 768,
+        flatten: bool = True,
+        *,
+        key: PRNGKeyArray,
+    ):
+        """
+        **Arguments:**
+
+        - `img_size`: The size of the input image. Defaults to `(224, 224)`
+        - `patch_size`: Size of the patch to construct from the input image. Defaults to `(16, 16)`
+        - `in_chans`: Number of input channels. Defaults to `3`
+        - `embed_dim`: The dimension of the resulting embedding of the patch. Defaults to `768`
+        - `flatten`: If enabled, the `2d` patches are flattened to `1d`
+        - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
+            initialisation. (Keyword only argument.)
+        """
+        super().__init__(img_size, patch_size, in_chans, embed_dim, flatten)
+
+        _, key = jrandom.split(key)
         self.proj = nn.Conv2d(
             in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, key=key
         )
-        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def __call__(
         self, x: Array, *, key: Optional[PRNGKeyArray] = None
@@ -192,6 +221,53 @@ class PatchEmbed(eqx.Module):
         x = self.proj(x)
         if self.flatten:
             x = jax.vmap(jnp.ravel)(x)
-            x = jnp.moveaxis(x, 0, -1)  # CHW -> NC
-        x = self.norm(x)
+            x = jnp.moveaxis(x, 0, -1)  # EmbedDim x HW -> HW x EmbedDim
+
         return x
+    
+
+class PatchLinearEmbed(Patch):
+
+    linear: eqx.nn.Linear
+
+    def __init__(
+            self, 
+            img_size: Union[int, Tuple[int]] = 224,
+            patch_size: Union[int, Tuple[int]] = 16,
+            in_chans: int = 3,
+            embed_dim: int = 768,
+            flatten: bool = True,
+            *,
+            key: PRNGKeyArray
+        ):
+        """
+        **Arguments:**
+
+        - `img_size`: The size of the input image. Defaults to `(224, 224)`
+        - `patch_size`: Size of the patch to construct from the input image. Defaults to `(16, 16)`
+        - `in_chans`: Number of input channels. Defaults to `3`
+        - `embed_dim`: The dimension of the resulting embedding of the patch. Defaults to `768`
+        - `flatten`: If enabled, the `2d` patches are flattened to `1d`
+        - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
+            initialisation. (Keyword only argument.)
+        """
+
+        super().__init__(img_size, patch_size, in_chans, embed_dim, flatten)
+        _, key = jrandom.split(key)
+        
+        in_features = in_chans * patch_size * patch_size
+        self.linear = nn.Linear(in_features, embed_dim, key=key)
+    
+    def __call__(self, x: Array) -> Array:
+        """
+        Inputs:
+            x - jax.Array representing the image of shape [C, H, W]
+        """
+        C, H, W = x.shape
+        x = x.reshape(C, self.grid_size[0], self.patch_size[0], self.grid_size[1], self.patch_size[1])
+        x = x.transpose(1, 3, 2, 4, 0)    # [H', W', p_H, p_W, C]
+        x = x.reshape(-1, *x.shape[2:])   # [H'*W', p_H, p_W, C]
+        if self.flatten:
+            x = x.reshape(x.shape[0], -1) # [H'*W', p_H*p_W*C]
+        
+        return vmap(self.linear)(x)

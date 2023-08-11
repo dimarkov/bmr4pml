@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array, PRNGKeyArray
 
-from .utils import DropPath, MlpProjection, PatchEmbed
+from .utils import DropPath, MlpProjection, PatchConvEmbed, PatchLinearEmbed, Patch
 
 
 class _VitAttention(eqx.Module):
@@ -179,10 +179,11 @@ class VisionTransformer(eqx.Module):
 
     num_features: int
     params: Params
-    patch_embed: PatchEmbed
+    patch_embed: Patch
     pos_drop: nn.Dropout
     blocks: Sequence[_VitBlock]
-    norm: eqx.Module
+    norm1: nn.LayerNorm
+    norm2: nn.LayerNorm
     fc: nn.Linear
     inference: bool
 
@@ -199,9 +200,11 @@ class VisionTransformer(eqx.Module):
         qkv_bias: bool = True,
         qk_scale=None,
         drop_rate=0.0,
+        activation=jnn.gelu,
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
+        patch_embed=PatchConvEmbed,
         *,
         key: Optional["jax.random.PRNGKey"] = None,
     ):
@@ -228,22 +231,23 @@ class VisionTransformer(eqx.Module):
 
         """
 
-        super().__init__()
         if key is None:
             key = jrandom.PRNGKey(0)
+        
         keys = jrandom.split(key, depth + 3)
         self.inference = False
         self.num_features = embed_dim
-        self.patch_embed = PatchEmbed(
+        self.patch_embed = patch_embed(
             img_size=img_size,
             patch_size=patch_size,
             in_chans=in_chans,
             embed_dim=embed_dim,
+            key=keys[0]
         )
         num_patches = self.patch_embed.num_patches
 
 
-        self.params = Params([(1, embed_dim), (num_patches + 1, embed_dim)], key=keys[0])
+        self.params = Params([(1, embed_dim), (num_patches + 1, embed_dim)], key=keys[1])
 
         self.pos_drop = nn.Dropout(p=drop_rate)
         dpr = jnp.linspace(0, drop_path_rate, depth)
@@ -257,12 +261,15 @@ class VisionTransformer(eqx.Module):
                 drop=drop_rate,
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[i],
+                act_layer=activation,
                 norm_layer=norm_layer,
-                key=keys[i + 1],
+                key=keys[i + 2],
             )
             for i in range(depth)
         ]
-        self.norm = norm_layer(embed_dim)
+        self.norm1 = norm_layer(embed_dim)
+
+        self.norm2 = norm_layer(embed_dim)
         
         # Classifier head
         self.fc = (
@@ -270,7 +277,6 @@ class VisionTransformer(eqx.Module):
             if num_classes == 0
             else nn.Linear(embed_dim, num_classes, key=keys[-1])
         )
-        # ToDo: Initialization scheme of the weights
     
     @property
     def cls_token(self):
@@ -288,10 +294,11 @@ class VisionTransformer(eqx.Module):
         """
         keys = jrandom.split(key, len(self.blocks))
         x = self.patch_embed(x)
+        x = jax.vmap(self.norm1)(x)
         x = jnp.concatenate([self.cls_token, x], axis=0) + self.pos_embed
         for key_, blk in zip(keys, self.blocks):
             x = blk(x, key=key_)
-        x = jax.vmap(self.norm)(x)
+        x = jax.vmap(self.norm2)(x)
         return self.fc(x[0])
 
     def get_last_self_attention(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
