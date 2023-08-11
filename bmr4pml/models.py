@@ -35,9 +35,6 @@ def trigamma(x):
 def zeta(alpha, beta):
     return digamma(alpha) - digamma(beta)
 
-def get_param_layers(layer):
-    is_param = lambda x: isinstance(x, Params)
-
 def get_linear_layers(layer):
     is_linear = lambda x: isinstance(x, eqx.nn.Linear) or isinstance(x, eqx.nn.Conv) or isinstance(x, eqx.nn.LayerNorm)
     return [x for x in jtu.tree_leaves(layer, is_leaf=is_linear) if is_linear(x)]
@@ -243,8 +240,8 @@ class SVIRegression(BayesRegression):
             u = sample(name + '.u_tau', dist.Gamma(1/2, 1).expand([i]).to_event(1))
             v = sample(name + '.v_tau', dist.Gamma(1/2, 1).expand([i]).to_event(1))
 
-            _u = sample(name + '.u_lam', dist.Gamma(1/2, 1).expand([j]).to_event(1)) if layer == 0 and not self.reduced else 1.
-            _v = sample(name + '.v_lam', dist.Gamma(1/2, 1).expand([j]).to_event(1)) if layer == 0 and not self.reduced else 1.
+            _u = sample(name + '.u_lam', dist.Gamma(1/2, 1).expand([i, j]).to_event(1)) if not self.reduced else 1.
+            _v = sample(name + '.v_lam', dist.Gamma(1/2, 1).expand([i, j]).to_event(1)) if not self.reduced else 1.
             
             psi = tau0_sqr * _v * jnp.expand_dims(v, -1)
             ksi = _u * jnp.expand_dims(u, -1)
@@ -499,28 +496,9 @@ class BMRRegression(SVIRegression):
         for l in range(len(self.layers) - 1):
             name = f'layer{l}.weight'
             mu, pi = self.sufficient_stats(name, params)
-            # alpha_0 = 1.
-            # beta_0 = 1.
-
-            # def scan_fn(carry, k):
-            #     zeta_k, alpha_0, beta_0, _ = carry
-            #     df, _, _ = del_f(mu.reshape(-1), pi.reshape(-1))
-            #     q = nn.sigmoid( zeta_k - df.reshape(mu.shape) )
-            #     alpha =  q.sum() + alpha_0
-            #     beta = (1 - q).sum() + beta_0
-            #     zeta_k = zeta(alpha, beta)
-            #     return (zeta_k, alpha, beta, q), None
-
-
-            # zeta_0 = zeta(alpha_0, beta_0)
-            # init = (zeta_0, alpha_0, beta_0, jnp.zeros(mu.shape))
-            # last, _ = lax.scan(scan_fn, init, jnp.arange(8) )
-
-            # q = last[-1]
-            # prob_last = nn.sigmoid( last[0] )
 
             df, _, _ = del_f(mu.reshape(-1), pi.reshape(-1))
-            active_weights = df.reshape(mu.shape) <= 0. # q > prob_last
+            active_weights = df.reshape(mu.shape) <= 0.
 
             self.gamma[name] = self.gamma[name] * active_weights + 1e-16 * ~active_weights
         
