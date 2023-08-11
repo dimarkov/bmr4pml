@@ -70,9 +70,9 @@ class MLP(nn.MLP):
         return x
     
 
-class MlpBlock(Module):
+class _MlpBlock(Module):
     activation: Callable
-    layers: tuple[nn.Linear, ...]
+    layers: Sequence[nn.Linear]
 
     def __init__(
         self,
@@ -83,7 +83,7 @@ class MlpBlock(Module):
         *,
         key: PRNGKeyArray
     ):
-    
+        super().__init__()
         keys = jr.split(key, 2)
         self.activation = activation
         
@@ -98,11 +98,11 @@ class MlpBlock(Module):
         return self.layers[1](y)
 
 
-class MixerBlock(Module):
+class _MixerBlock(Module):
     """Mixer block layer."""
     norm1: Callable
     norm2: Callable
-    blocks: tuple[MlpBlock, ...]
+    blocks: Sequence[_MlpBlock]
 
     def __init__(
         self,
@@ -114,15 +114,15 @@ class MixerBlock(Module):
         *,
         key: PRNGKeyArray
     ):
-     
+        super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
         keys = jr.split(key, 2)
-        self.blocks = (
-            MlpBlock(tokens_dim, tokens_hidden_dim, tokens_dim, activation, key=keys[0]),  # token_mixing
-            MlpBlock(embed_dim, embed_hidden_dim, embed_dim, activation, key=keys[1])  # channel_mixing
-        )
+        self.blocks = [
+            _MlpBlock(tokens_dim, tokens_hidden_dim, tokens_dim, activation, key=keys[0]),  # token_mixing
+            _MlpBlock(embed_dim, embed_hidden_dim, embed_dim, activation, key=keys[1])  # channel_mixing
+        ]
     
     def __call__(self, x):
         y = vmap(self.norm1)(x)
@@ -136,10 +136,10 @@ class MixerBlock(Module):
 
 class MlpMixer(Module):
     """MLP Mixer architecture proted from https://github.com/google-research/vision_transformer/blob/linen/vit_jax/models_mixer.py."""
-    mixers: tuple[MixerBlock, ...]
+    mixers: Sequence[_MixerBlock]
     norm: nn.LayerNorm
-    patch_embed: Patch
-    linear: nn.Linear
+    patch_embed: Module
+    fc: nn.Linear
 
     def __init__(
             self,
@@ -156,7 +156,7 @@ class MlpMixer(Module):
             *,
             key: PRNGKeyArray
         ):
-
+        super().__init__()
         embed_hidden_dim = hidden_dim_ratio * tokens_hidden_dim
         keys = jr.split(key, num_blocks + 2)
 
@@ -169,12 +169,22 @@ class MlpMixer(Module):
         )
 
         tokens_dim = self.patch_embed.num_patches
-        self.mixers = (
-            MixerBlock(tokens_dim, embed_dim, tokens_hidden_dim, embed_hidden_dim, activation, key=keys[i]) for i in range(num_blocks)
-        )
+        self.mixers = [
+            _MixerBlock(
+                tokens_dim, 
+                embed_dim, 
+                tokens_hidden_dim, 
+                embed_hidden_dim, 
+                activation, 
+                key=keys[i]
+            ) 
+            for i in range(num_blocks)
+        ]
 
         self.norm = nn.LayerNorm(embed_dim)
-        self.linear = nn.Linear(embed_dim, num_classes, key=keys[-1])
+
+        # Classifier head
+        self.fc = nn.Linear(embed_dim, num_classes, key=keys[-1])
 
     def __call__(
         self, x: Array, *, key: Optional[PRNGKeyArray] = None
@@ -192,6 +202,7 @@ class MlpMixer(Module):
         # x shape is (h w) embed_dim
         for mixer in self.mixers:
             x = mixer(x)
+
         x = self.norm(x)
         x = jnp.mean(x, axis=-2)
-        return self.linear(x)
+        return self.fc(x)
