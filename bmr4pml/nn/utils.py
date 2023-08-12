@@ -61,17 +61,14 @@ class DropPath(eqx.Module):
         else:
             keep_prob = 1 - lax.stop_gradient(self.p)
             if self.mode == "global":
-                noise = jrandom.bernoulli(key, p=keep_prob)
+                mask = jrandom.bernoulli(key, p=keep_prob)
             else:
-                noise = jnp.expand_dims(
+                mask = jnp.expand_dims(
                     jrandom.bernoulli(key, p=keep_prob, shape=[x.shape[0]]).reshape(-1),
                     axis=[i for i in range(1, len(x.shape))],
                 )
-            if keep_prob > 0.0:
-                noise /= keep_prob
-            
-            return x * noise
 
+            return jnp.where(mask, x / keep_prob, 0)
 
 class MlpProjection(eqx.Module):
     """MLP as used in Vision Transformer, MLP-Mixer and related networks"""
