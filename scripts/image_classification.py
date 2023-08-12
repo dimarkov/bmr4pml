@@ -41,7 +41,7 @@ def run_inference(rng_key, nnet, opts_regression, opts_fitting, train_ds, test_d
 def main(dataset_name, nn_type, methods, platform, seed):
     rng_key = random.PRNGKey(seed)
     num_epochs = 5
-    num_iters = 80_000
+    num_iters = 70_000
 
     # load data
     train_ds, test_ds = load_data(dataset_name, platform=platform, id=0)
@@ -71,12 +71,14 @@ def main(dataset_name, nn_type, methods, platform, seed):
     except:
         results = {nn_type: {}}
 
+    batch_size = 512
+    lr = 1e-2
     opts_regression = {
         'regtype': 'multinomial',
-        'gamma0': 0.05,
+        'gamma0': 0.1,
         'autoguide': 'delta',
         'optim_kwargs': {
-            'learning_rate': 1e-4
+            'learning_rate': lr
         }
     }
 
@@ -85,7 +87,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
         'num_iters': num_iters,
         'num_samples': 1,
         'model_kwargs': {
-            'batch_size': 512, 
+            'batch_size': batch_size, 
             'with_hyperprior': False
         }
     }
@@ -110,6 +112,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
         )
     elif nn_type == 'resnet':
         rng_key, key = random.split(rng_key)
+        #TODO make resnet work with batch_norm layers
         nnet = resnet18(num_channels=num_channels, num_classes=out_size, activation=nn.swish, key=key)
     elif nn_type == 'vit':
         rng_key, key = random.split(rng_key)
@@ -118,9 +121,9 @@ def main(dataset_name, nn_type, methods, platform, seed):
                 patch_size=4,
                 in_chans=in_size[0],
                 num_classes=out_size,
-                embed_dim=192,
+                embed_dim=128 if 'mnist' in dataset_name else 3 * 128,
                 depth=6,
-                num_heads=4,
+                num_heads=8,
                 mlp_ratio=4.,
                 activation=nn.gelu,
                 drop_rate=0.2,
@@ -128,16 +131,15 @@ def main(dataset_name, nn_type, methods, platform, seed):
                 drop_path_rate=0.2,
                 key = key
             )
-    
     elif nn_type == 'mixer':
         rng_key, key = random.split(rng_key)
         nnet = MlpMixer(
             img_size=in_size[1],
             in_channels=in_size[0], 
             patch_size=4,
-            embed_dim=128,
-            tokens_hidden_dim=256,
-            hidden_dim_ratio=3,
+            embed_dim=128 if 'mnist' in dataset_name else 3 * 128,
+            tokens_hidden_dim=3 * 256,
+            hidden_dim_ratio=3 if 'mnist' in dataset_name else 1,
             num_blocks=6,
             num_classes=out_size,
             activation=nn.gelu,
@@ -154,15 +156,15 @@ def main(dataset_name, nn_type, methods, platform, seed):
         results[nn_type]['Flat-MAP'] = output
         jnp.savez(f'results/{dataset_name}.npz', results=results)
 
-    tau0 = 5 * 1e-2 if nn_type == 'lenet' and dataset_name == 'fashion_mnist' else 1e-2
+    tau0 = 1e-2
     method_opts_reg = {
-        'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
-        'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 1e-3}},
+        'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': lr}},
+        'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': lr}},
     }
 
     method_opts_fit = {
-        'Flat-FF': {'num_samples': 100, 'model_kwargs': {'batch_size': 512, 'with_hyperprior': False}},
-        'Tiered-FF': {'num_samples': 100, 'model_kwargs': {'batch_size': 512, 'with_hyperprior': True}},
+        'Flat-FF': {'num_samples': 100, 'model_kwargs': {'batch_size': batch_size, 'with_hyperprior': False}},
+        'Tiered-FF': {'num_samples': 100, 'model_kwargs': {'batch_size': batch_size, 'with_hyperprior': True}},
     }
 
     # turn off dropout for Bayesian estimation
@@ -181,11 +183,11 @@ def main(dataset_name, nn_type, methods, platform, seed):
     
     method_opts_reg = {
         'BMR-S&S':  {
-        'gamma0': 0.05, 
+        'gamma0': 0.1, 
         'pruning': 'spike-and-slab', 
         'posterior': 'normal', 
         'optim_kwargs': {
-                'learning_rate': 1e-3
+                'learning_rate': lr
             },
         },
         
@@ -197,17 +199,17 @@ def main(dataset_name, nn_type, methods, platform, seed):
     }
 
     opts_fitting = opts_fitting | {
-        'num_iters': num_iters - 10_000, 
+        'num_iters': num_iters, 
         'num_samples': 100, 
-        'pruning_kwargs': {'delta': 1e-5},
-        'model_kwargs': {'batch_size': 512, 'with_hyperprior': False}    
+        'pruning_kwargs': {'delta': 1e-12},
+        'model_kwargs': {'batch_size': batch_size, 'with_hyperprior': False}    
     }
 
     if 'BMR-S&S' in methods or 'BMR-RHS' in methods:
         rng_key, key = random.split(rng_key)
         opts_regression = opts_regression | method_opts_reg['BMR-S&S']
         state, params = run_inference(
-            key, nnet, opts_regression, opts_fitting | {'warmup_iters': 400_000}, train_ds, test_ds, reg_model=BMRRegression
+            key, nnet, opts_regression, opts_fitting | {'warmup_iters': 100_000}, train_ds, test_ds, reg_model=BMRRegression
         )
 
     for method in ['BMR-S&S', 'BMR-RHS']:
