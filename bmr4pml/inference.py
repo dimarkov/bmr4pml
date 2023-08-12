@@ -160,7 +160,7 @@ def fit_and_test(regression, train_ds, test_ds, opts):
     
     return results
 
-def pruned_fraction(gammas, params, delta=1e-15):
+def pruned_fraction(gammas, params, delta=1e-15, **kwargs):
     count = 0
     size = 0
     for l in range(len(gammas) - 1):
