@@ -178,6 +178,7 @@ class VisionTransformer(eqx.Module):
     """Vision Transformer ported from https://github.com/facebookresearch/dino/blob/main/vision_transformer.py"""
 
     num_features: int
+    inference: bool
     params: Params
     patch_embed: Patch
     pos_drop: nn.Dropout
@@ -185,7 +186,7 @@ class VisionTransformer(eqx.Module):
     norm1: nn.LayerNorm
     norm2: nn.LayerNorm
     fc: nn.Linear
-    inference: bool
+    
 
     def __init__(
         self,
@@ -230,7 +231,7 @@ class VisionTransformer(eqx.Module):
         initialisation. (Keyword only argument.)
 
         """
-
+        super().__init__()
         if key is None:
             key = jrandom.PRNGKey(0)
         
@@ -272,11 +273,7 @@ class VisionTransformer(eqx.Module):
         self.norm2 = norm_layer(embed_dim)
         
         # Classifier head
-        self.fc = (
-            nn.Identity()
-            if num_classes == 0
-            else nn.Linear(embed_dim, num_classes, key=keys[-1])
-        )
+        self.fc = nn.Identity() if num_classes == 0 else nn.Linear(embed_dim, num_classes, key=keys[-1])
     
     @property
     def cls_token(self):
@@ -298,6 +295,7 @@ class VisionTransformer(eqx.Module):
         x = jnp.concatenate([self.cls_token, x], axis=0) + self.pos_embed
         for key_, blk in zip(keys, self.blocks):
             x = blk(x, key=key_)
+        
         x = jax.vmap(self.norm2)(x)
         return self.fc(x[0])
 
