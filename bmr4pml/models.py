@@ -498,7 +498,25 @@ class BMRRegression(SVIRegression):
             mu, pi = self.sufficient_stats(name, params)
 
             df, _, _ = del_f(mu.reshape(-1), pi.reshape(-1))
-            active_weights = df.reshape(mu.shape) <= 0.
+            df = df.reshape(mu.shape)
+            alpha_0 = 1.
+            beta_0 = 1.
+            def step_fn(carry, t):
+                zeta_k = carry
+                q = nn.sigmoid( zeta_k - df)
+
+                alpha = alpha_0 + q.sum()
+                beta = beta_0 + (1 - q).sum()
+
+                zeta_k = zeta(alpha, beta)
+
+                return zeta_k, None
+            
+            zeta_0 = zeta(alpha_0, beta_0)
+
+            zeta_k, _ = lax.scan(step_fn, zeta_0, jnp.arange(4))
+
+            active_weights = df <= zeta_k  # alternatively just use df <= 0.
 
             self.gamma[name] = self.gamma[name] * active_weights + 1e-16 * ~active_weights
         
@@ -525,7 +543,7 @@ class BMRRegression(SVIRegression):
             
             factor(f'layer{l}.weight.log_prob', log_prob)
         
-    def prune_regularised_horseshoe(self, rng_key, params, num_particles=16, delta=1e-6, **kwargs):
+    def prune_regularised_horseshoe(self, rng_key, params, num_particles=16, delta=1e-6, num_iters=5_000, **kwargs):
         
         model = self.rh_model
         guide = self.rh_guide
@@ -534,7 +552,7 @@ class BMRRegression(SVIRegression):
 
         svi = SVI(model, guide, optim, loss)
         rng_key, key = random.split(rng_key)
-        res = svi.run(rng_key, 10_000, params, progress_bar=False, stable_update=True)
+        res = svi.run(rng_key, num_iters, params, progress_bar=False, stable_update=True)
         
         pred = Predictive(model, guide=guide, params=res.params, num_samples=1000)
         rng_key, key = random.split(rng_key)
