@@ -41,7 +41,7 @@ def run_inference(rng_key, nnet, opts_regression, opts_fitting, train_ds, test_d
 def main(dataset_name, nn_type, methods, platform, seed):
     rng_key = random.PRNGKey(seed)
     num_epochs = 5
-    num_iters = 70_000
+    num_iters = 20_000
 
     # load data
     train_ds, test_ds = load_data(dataset_name, platform=platform, id=0)
@@ -71,7 +71,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
     except:
         results = {nn_type: {}}
 
-    batch_size = 512
+    batch_size = 128
     lr = 1e-2
     opts_regression = {
         'regtype': 'multinomial',
@@ -121,7 +121,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
                 patch_size=4,
                 in_chans=in_size[0],
                 num_classes=out_size,
-                embed_dim=128 if 'mnist' in dataset_name else 3 * 128,
+                embed_dim=128 if 'mnist' in dataset_name else 256,
                 depth=6,
                 num_heads=8,
                 mlp_ratio=4.,
@@ -137,8 +137,8 @@ def main(dataset_name, nn_type, methods, platform, seed):
             img_size=in_size[1],
             in_channels=in_size[0], 
             patch_size=4,
-            embed_dim=128 if 'mnist' in dataset_name else 3 * 128,
-            tokens_hidden_dim=3 * 256,
+            embed_dim=128 if 'mnist' in dataset_name else 256,
+            tokens_hidden_dim=256 if 'mnist' in dataset_name else 2 * 256,
             hidden_dim_ratio=3 if 'mnist' in dataset_name else 1,
             num_blocks=6,
             num_classes=out_size,
@@ -236,7 +236,6 @@ if __name__ == '__main__':
         'Flat-FF',
         'Tiered-FF',
         'BMR-S&S',
-        'BMR-RHS'
     ]
     parser.add_argument(
         "-m", "--methods", nargs='+', default=default, type=str
