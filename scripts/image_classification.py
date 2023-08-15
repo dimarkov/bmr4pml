@@ -65,7 +65,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
     try:
         results = jnp.load(f'results/{dataset_name}.npz', allow_pickle=True)['results'].item()
         try:
-            results[nn_type] = results.pop(nn_type, {}) if len(methods) < 5 else {}
+            results[nn_type] = results.pop(nn_type, {}) if len(methods) < 4 else {}
         except:
             results[nn_type] = {}
     except:
@@ -101,7 +101,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
     elif nn_type == 'lenet':
         rng_key, key = random.split(rng_key)
         conv_features = [6, 16, 120] if dataset_name == 'fashion_mnist' else [18, 48, 360]
-        dense_features = [84, 10] if dataset_name == 'fashion_mnist' else [252, out_size]
+        dense_features = [84, 10] if dataset_name == 'fashion_mnist' else [256, out_size]
         nnet = LeNet(
             in_size, 
             conv_features=conv_features,
@@ -121,10 +121,10 @@ def main(dataset_name, nn_type, methods, platform, seed):
                 patch_size=4,
                 in_chans=in_size[0],
                 num_classes=out_size,
-                embed_dim=128 if 'mnist' in dataset_name else 256,
+                embed_dim=256,
                 depth=6,
                 num_heads=8,
-                mlp_ratio=4.,
+                mlp_ratio=2,
                 activation=nn.gelu,
                 drop_rate=0.2,
                 attn_drop_rate=0.2,
@@ -137,9 +137,9 @@ def main(dataset_name, nn_type, methods, platform, seed):
             img_size=in_size[1],
             in_channels=in_size[0], 
             patch_size=4,
-            embed_dim=128 if 'mnist' in dataset_name else 256,
-            tokens_hidden_dim=256 if 'mnist' in dataset_name else 2 * 256,
-            hidden_dim_ratio=3 if 'mnist' in dataset_name else 1,
+            embed_dim=256,
+            tokens_hidden_dim=512,
+            hidden_dim_ratio=1,
             num_blocks=6,
             num_classes=out_size,
             activation=nn.gelu,
@@ -201,7 +201,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
     opts_fitting = opts_fitting | {
         'num_iters': num_iters, 
         'num_samples': 100, 
-        'pruning_kwargs': {'delta': 1e-12},
+        'pruning_kwargs': {'delta': 1e-6},
         'model_kwargs': {'batch_size': batch_size, 'with_hyperprior': False}    
     }
 
