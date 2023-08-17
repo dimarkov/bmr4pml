@@ -72,10 +72,9 @@ def main(dataset_name, nn_type, methods, platform, seed):
         results = {nn_type: {}}
 
     batch_size = 128
-    lr = 1e-2
+    lr = 1e-3
     opts_regression = {
         'regtype': 'multinomial',
-        'gamma0': 0.1,
         'autoguide': 'delta',
         'optim_kwargs': {
             'learning_rate': lr
@@ -94,8 +93,8 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
     rng_key, key = random.split(rng_key)
     if nn_type == 'mlp':
-        depth = 5
-        num_neurons = 400
+        depth = 4
+        num_neurons = 500
         rng_key, key = random.split(rng_key)
         nnet = MLP( prod(in_size), out_size, num_neurons, depth, activation=nn.swish, dropout_rate=0.2, key=key)
     elif nn_type == 'lenet':
@@ -180,29 +179,26 @@ def main(dataset_name, nn_type, methods, platform, seed):
             results[nn_type][method] = output
             jnp.savez(f'results/{dataset_name}.npz', results=results)
 
-    
     method_opts_reg = {
         'BMR-S&S':  {
-        'gamma0': 0.1, 
-        'pruning': 'spike-and-slab', 
-        'posterior': 'normal', 
+        'pruning': 'spike-and-slab',
+        'posterior': 'normal',
         'optim_kwargs': {
                 'learning_rate': lr
             },
         },
-        
         'BMR-RHS': {
             'tau0': tau0,
-            'reduced': True, 
+            'reduced': True,
             'pruning': 'regularised-horseshoe'
         }
     }
 
     opts_fitting = opts_fitting | {
-        'num_iters': num_iters, 
-        'num_samples': 100, 
-        'pruning_kwargs': {'delta': 1e-6},
-        'model_kwargs': {'batch_size': batch_size, 'with_hyperprior': False}    
+        'num_iters': num_iters,
+        'num_samples': 100,
+        'pruning_kwargs': {'delta': 1e-4},
+        'model_kwargs': {'batch_size': batch_size, 'with_hyperprior': False}
     }
 
     if 'BMR-S&S' in methods or 'BMR-RHS' in methods:

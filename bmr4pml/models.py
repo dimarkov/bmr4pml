@@ -115,12 +115,18 @@ class BayesRegression(object):
 
         return gamma
 
-    def prior(self, name, sigma, gamma, loc=0.):
-        aff = AffineTransform(loc, sigma * gamma)
+    def prior(self, name, sigma, gamma, loc=0., centered=False):
+        if centered:
+            aff = AffineTransform(loc, sigma)
+            dstr = dist.Normal(0., gamma).to_event(2) 
+        else:
+            aff = AffineTransform(loc, sigma * gamma)
+            dstr = dist.Normal(0., 1.).expand(list(gamma.shape)).to_event(2)
+
         with handlers.reparam(config={name: TransformReparam()}):
             weight = sample(
                 name, 
-                dist.TransformedDistribution(dist.Normal(0., 1.).expand(list(gamma.shape)).to_event(2), aff)
+                dist.TransformedDistribution(dstr, aff)
             )
 
         return weight
@@ -137,19 +143,25 @@ class BayesRegression(object):
             
             # mark layer as last if l + 1 == L
             last = False if l == 0 else True
-            last = False if l + 1 < L else last            
+            last = False if l + 1 < L else last 
+            name = f'layer{l}.weight'        
             if with_hyperprior:
-                gamma = self.hyperprior(f'layer{l}.weight', shape, l, last=last)
+                gamma = self.hyperprior(name, shape, l, last=last)
+                c = 1.
             else:
-                if gammas is None:
-                    gamma = 10 * self.gamma[f'layer{l}.weight'] if last else self.gamma[f'layer{l}.weight']
-                else:
-                    gamma = 10 * gammas[f'layer{l}.weight'] if last else gammas[f'layer{l}.weight']
+                gamma = self.gamma[name] if gammas is None else gammas[name]
+                
+                c_inv_sqr = sample(f'{name}.c_inv_sqr', dist.Gamma(2, 2))
+                c = jnp.sqrt( 1 / c_inv_sqr ) if last else jnp.sqrt( 1 / c_inv_sqr ) / 10
             
             gamma = jnp.broadcast_to(gamma, shape)
             
-            scale = 1. if l + 1 < L else sigma
-            _weights = self.prior(f'layer{l}.weight', scale, gamma)
+            if self.type == 'linear':
+                scale = c if l + 1 < L else sigma
+            else:
+                scale = c
+            
+            _weights = self.prior(name, scale, gamma)
             
             weight = _weights.reshape(weight.shape) if bias is None else _weights[..., :-1].reshape(weight.shape)
             bias = _weights[..., -1].reshape(bias.shape) if bias is not None else bias
@@ -422,8 +434,8 @@ class BMRRegression(SVIRegression):
             raise NotImplementedError
 
     def __lognormal(self, name, shape):
-        loc = param(name + '.loc', lambda rng_key: random.normal(rng_key, shape=shape))
-        scale = param(name + '.scale', jnp.ones(shape)/10, constraint=constraints.softplus_positive)
+        loc = param(name + '.loc', lambda rng_key: init_fn(rng_key, shape, radius=2.) )
+        scale = param(name + '.scale', jnp.full(shape, 0.1), constraint=constraints.softplus_positive)
         return dist.LogNormal(loc, scale)
 
     def guide(self, *args, **kwargs):
@@ -443,6 +455,7 @@ class BMRRegression(SVIRegression):
                 shape = (shape[0], shape[1] + 1)
             
             name = f'layer{l}.weight'
+            sample(f'{name}.c_inv_sqr', self.__lognormal(f'{name}.c_inv_sqr', ()) )
             self.get_weight_posterior(name, shape)
 
     def ΔF(self, mu, P, gamma, sigma_sqr=1):
@@ -518,7 +531,7 @@ class BMRRegression(SVIRegression):
 
             active_weights = df <= zeta_k  # alternatively just use df <= 0.
 
-            self.gamma[name] = self.gamma[name] * active_weights + 1e-16 * ~active_weights
+            self.gamma[name] = self.gamma[name] * active_weights + 1e-8 * ~active_weights
         
         return self.gamma
     
