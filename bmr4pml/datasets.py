@@ -2,8 +2,6 @@ from jax import devices, device_put, device_put_replicated
 import jax.numpy as jnp
 import tensorflow_datasets as tfds
 
-gpus = devices('gpu')
-cpus = devices('cpu')
 
 def put_on_device(data_set, devices, id=None):
   for key in data_set:

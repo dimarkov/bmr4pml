@@ -13,7 +13,11 @@ from jax import nn, devices, device_put, lax
 
 from .models import BayesRegression, SVIRegression, BMRRegression
 
-gpus = devices('gpu')
+try:
+    gpus = devices('gpu')
+except:
+    gpus = []
+
 if len(gpus) < 2:
     dev2 = devices('cpu')[0]
 else:
