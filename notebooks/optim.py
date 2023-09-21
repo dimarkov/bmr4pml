@@ -90,7 +90,7 @@ def scale_by_vadam(
 
   m_dtype = utils.canonicalize_dtype(m_dtype)
 
-  s_init = scaled_init_precision - scaled_prior_precision
+  s_init = max(0., scaled_init_precision - scaled_prior_precision)
   t_lam = scaled_prior_precision
 
   def init_fn(params):
@@ -140,7 +140,7 @@ def scale_by_vadabelief(
 
   m_dtype = utils.canonicalize_dtype(m_dtype)
 
-  s_init = scaled_init_precision - scaled_prior_precision
+  s_init = max(0., scaled_init_precision - scaled_prior_precision)
   t_lam = scaled_prior_precision
 
   def init_fn(params):
@@ -232,8 +232,7 @@ def vadam(
     The corresponding `GradientTransformation`.
   """
   return combine.chain(
-      scale_by_vadam(
-          t_lam, t_init, b1=b1, b2=b2, eps_root=eps_root, m_dtype=m_dtype),
+      scale_by_vadam(t_lam, t_init, b1=b1, b2=b2, eps_root=eps_root, m_dtype=m_dtype),
       _scale_by_learning_rate(learning_rate),
   )
 
