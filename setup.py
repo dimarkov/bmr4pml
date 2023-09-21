@@ -40,7 +40,7 @@ classifiers=[
 
 setup_kwargs = {
     'name': 'bmr4pml',
-    'version': '0.0.1',
+    'version': '0.1.0',
     'description': 'Bayesian model reduction for probabilistic machine learning',
     'long_description': None,
     'classifiers': classifiers,
