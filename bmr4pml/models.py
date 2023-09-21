@@ -151,17 +151,17 @@ class BayesRegression(object):
             else:
                 gamma = self.gamma[name] if gammas is None else gammas[name]
                 
-                c_inv_sqr = sample(f'{name}.c_inv_sqr', dist.Gamma(2, 2))
+                c_inv_sqr = sample(f'{name}.c_inv_sqr', dist.Gamma(2, 6))
                 c = jnp.sqrt( 1 / c_inv_sqr ) if last else jnp.sqrt( 1 / c_inv_sqr ) / 10
             
             gamma = jnp.broadcast_to(gamma, shape)
             
             if self.type == 'linear':
-                scale = c if l + 1 < L else sigma
+                sigma = c if l + 1 < L else sigma
             else:
-                scale = c
+                sigma = c
             
-            _weights = self.prior(name, scale, gamma)
+            _weights = self.prior(name, sigma, gamma)
             
             weight = _weights.reshape(weight.shape) if bias is None else _weights[..., :-1].reshape(weight.shape)
             bias = _weights[..., -1].reshape(bias.shape) if bias is not None else bias
