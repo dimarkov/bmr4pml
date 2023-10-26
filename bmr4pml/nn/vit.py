@@ -15,9 +15,8 @@ class _VitAttention(eqx.Module):
     num_heads: int
     scale: float
     qkv: nn.Linear
-    attn_drop: nn.Dropout
+    drop: nn.Dropout
     proj: nn.Linear
-    proj_drop: nn.Dropout
 
     def __init__(
         self,
@@ -25,8 +24,7 @@ class _VitAttention(eqx.Module):
         num_heads: int = 8,
         qkv_bias: bool = False,
         qk_scale=None,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
+        drop_rate: float = 0.0,
         *,
         key: PRNGKeyArray = None,
     ):
@@ -48,9 +46,8 @@ class _VitAttention(eqx.Module):
         self.scale = qk_scale or head_dim**-0.5
 
         self.qkv = nn.Linear(dim, dim * 3, use_bias=qkv_bias, key=keys[0])
-        self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim, key=keys[1])
-        self.proj_drop = nn.Dropout(proj_drop)
+        self.drop = nn.Dropout(drop_rate)
 
     def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Sequence[Array]:
         """**Arguments:**
@@ -59,7 +56,6 @@ class _VitAttention(eqx.Module):
         - `key`: Utilised by few layers in the network such as `Dropout` or `BatchNorm`.
         """
         N, C = x.shape
-        keys = jrandom.split(key, 2)
         qkv = jax.vmap(self.qkv)(x)
         qkv = jnp.reshape(qkv, (N, 3, self.num_heads, C // self.num_heads))
         qkv = jnp.transpose(qkv, axes=(1, 2, 0, 3))
@@ -67,33 +63,30 @@ class _VitAttention(eqx.Module):
 
         attn = (q @ jnp.transpose(k, (0, 1, 3, 2))) * self.scale
         attn = jnn.softmax(attn, axis=-1)
-        attn = self.attn_drop(attn, key=keys[0])
+        attn = self.drop(attn, key=key)
 
         x = jnp.reshape(jnp.transpose((attn @ v), axes=(0, 2, 1, 3)), (N, C))
         x = jax.vmap(self.proj)(x)
-        x = self.proj_drop(x, key=keys[1])
         return x, attn
 
 
 class _VitBlock(eqx.Module):
     norm1: eqx.Module
     attn: _VitAttention
-    drop_path: DropPath
     norm2: eqx.Module
     mlp: MlpProjection
+    drop: nn.Dropout
 
     def __init__(
         self,
         dim,
         num_heads,
-        mlp_ratio=4.0,
-        qkv_bias=False,
-        qk_scale=None,
-        drop=0.0,
-        attn_drop=0.0,
-        drop_path=0.0,
-        act_layer=jnn.swish,
-        norm_layer=nn.LayerNorm,
+        mlp_ratio,
+        qkv_bias,
+        qk_scale,
+        drop_rate,
+        act_layer,
+        norm_layer,
         *,
         key: PRNGKeyArray,
     ):
@@ -104,9 +97,7 @@ class _VitBlock(eqx.Module):
         - `mlp_ratio`: For computing hidden dimension of the `mlp` (=`dim * mlp_ratio`).
         - `qkv_bias`: To add `bias` within the `qkv` computation.
         - `qk_scale`: For scaling the `query` `value` computation.
-        - `drop`: Dropout rate for the `mlp`.
-        - `attn_drop`: Dropout rate for the attention.
-        - `proj_drop`: Dropout rate for the projection.
+        - `drop_rate`: Dropout rate.
         - `act_layer`: Activation applied on to the intermediate outputs.
         - `norm_layer`: Normalisation applied to the intermediate outputs.
         - key: A `jax.random.PRNGKey` used to provide randomness for parameter
@@ -120,20 +111,21 @@ class _VitBlock(eqx.Module):
             num_heads=num_heads,
             qkv_bias=qkv_bias,
             qk_scale=qk_scale,
-            attn_drop=attn_drop,
-            proj_drop=drop,
+            drop_rate=drop_rate,
             key=keys[0],
         )
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = MlpProjection(
             in_features=dim,
             hidden_features=mlp_hidden_dim,
             act_layer=act_layer,
-            drop=drop,
+            drop_rate=(drop_rate, 0.0),
             key=keys[1],
         )
+
+        self.drop = nn.Dropout(p=drop_rate)
 
     def __call__(
         self, x: Array, return_attention=False, *, key: "jax.random.PRNGKey"
@@ -149,10 +141,11 @@ class _VitBlock(eqx.Module):
         y, attn = self.attn(y, key=keys[0])
         if return_attention:
             return attn
-        x = x + self.drop_path(y, key=keys[1])
+
+        x = x + self.drop(y, key=keys[1])
         y = jax.vmap(self.norm2)(x)
         y = jax.vmap(self.mlp)(y, key=jrandom.split(keys[2], x.shape[0]))
-        x = x + self.drop_path(y, key=keys[3])
+        x = x + self.drop(y, key=keys[3])
         return x
 
 
@@ -181,10 +174,9 @@ class VisionTransformer(eqx.Module):
     inference: bool
     params: Params
     patch_embed: Patch
-    pos_drop: nn.Dropout
+    drop: nn.Dropout
     blocks: Sequence[_VitBlock]
-    norm1: nn.LayerNorm
-    norm2: nn.LayerNorm
+    norm: nn.LayerNorm
     fc: nn.Linear
     
 
@@ -202,8 +194,6 @@ class VisionTransformer(eqx.Module):
         qk_scale=None,
         drop_rate=0.0,
         activation=jnn.gelu,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
         patch_embed=PatchConvEmbed,
         *,
@@ -250,8 +240,7 @@ class VisionTransformer(eqx.Module):
 
         self.params = Params([(1, embed_dim), (num_patches + 1, embed_dim)], key=keys[1])
 
-        self.pos_drop = nn.Dropout(p=drop_rate)
-        dpr = jnp.linspace(0, drop_path_rate, depth)
+        self.drop = nn.Dropout(p=drop_rate)
         self.blocks = [
             _VitBlock(
                 dim=embed_dim,
@@ -259,18 +248,15 @@ class VisionTransformer(eqx.Module):
                 mlp_ratio=mlp_ratio,
                 qkv_bias=qkv_bias,
                 qk_scale=qk_scale,
-                drop=drop_rate,
-                attn_drop=attn_drop_rate,
-                drop_path=dpr[i],
+                drop_rate=drop_rate,
                 act_layer=activation,
                 norm_layer=norm_layer,
                 key=keys[i + 2],
             )
             for i in range(depth)
         ]
-        self.norm1 = norm_layer(embed_dim)
 
-        self.norm2 = norm_layer(embed_dim)
+        self.norm = norm_layer(embed_dim)
         
         # Classifier head
         self.fc = nn.Identity() if num_classes == 0 else nn.Linear(embed_dim, num_classes, key=keys[-1])
@@ -289,14 +275,15 @@ class VisionTransformer(eqx.Module):
         - `x`: The input `JAX` array
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
         """
-        keys = jrandom.split(key, len(self.blocks))
+        keys = jrandom.split(key, len(self.blocks) + 1)
         x = self.patch_embed(x)
-        x = jax.vmap(self.norm1)(x)
         x = jnp.concatenate([self.cls_token, x], axis=0) + self.pos_embed
-        for key_, blk in zip(keys, self.blocks):
+
+        x = self.drop(x, key=keys[0])
+        for key_, blk in zip(keys[1:], self.blocks):
             x = blk(x, key=key_)
         
-        x = jax.vmap(self.norm2)(x)
+        x = jax.vmap(self.norm)(x)
         return self.fc(x[0])
 
     def get_last_self_attention(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:

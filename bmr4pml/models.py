@@ -531,7 +531,7 @@ class BMRRegression(SVIRegression):
 
             active_weights = df <= zeta_k  # alternatively just use df <= 0.
 
-            self.gamma[name] = self.gamma[name] * active_weights + 1e-8 * ~active_weights
+            self.gamma[name] = self.gamma[name] * active_weights + 1e-12 * ~active_weights
         
         return self.gamma
     

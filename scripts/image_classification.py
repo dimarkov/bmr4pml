@@ -40,8 +40,10 @@ def run_inference(rng_key, nnet, opts_regression, opts_fitting, train_ds, test_d
 
 def main(dataset_name, nn_type, methods, platform, seed):
     rng_key = random.PRNGKey(seed)
-    num_epochs = 5
-    num_iters = 20_000
+    num_epochs = 50
+    num_iters = 500
+
+    path_prexif = 'results/'
 
     # load data
     train_ds, test_ds = load_data(dataset_name, platform=platform, id=0)
@@ -63,15 +65,17 @@ def main(dataset_name, nn_type, methods, platform, seed):
     print(nn_type, dataset_name, 'input size:', in_size)
 
     try:
-        results = jnp.load(f'results/{dataset_name}.npz', allow_pickle=True)['results'].item()
+        results = jnp.load(f'{path_prexif}{dataset_name}.npz', allow_pickle=True)['results'].item()
         try:
             results[nn_type] = results.pop(nn_type, {}) if len(methods) < 4 else {}
         except:
             results[nn_type] = {}
     except:
         results = {nn_type: {}}
+        jnp.savez(f'{path_prexif}{dataset_name}.npz', results=results)
+        print('creating new file ... ')
 
-    batch_size = 128
+    batch_size = 120
     lr = 1e-3
     opts_regression = {
         'regtype': 'multinomial',
@@ -110,9 +114,10 @@ def main(dataset_name, nn_type, methods, platform, seed):
             key=key
         )
     elif nn_type == 'resnet':
-        rng_key, key = random.split(rng_key)
+        # rng_key, key = random.split(rng_key)
         #TODO make resnet work with batch_norm layers
-        nnet = resnet18(num_channels=num_channels, num_classes=out_size, activation=nn.swish, key=key)
+        # nnet = resnet18(num_channels=num_channels, num_classes=out_size, activation=nn.swish, key=key)
+        raise NotImplementedError
     elif nn_type == 'vit':
         rng_key, key = random.split(rng_key)
         nnet = VisionTransformer(
@@ -126,9 +131,8 @@ def main(dataset_name, nn_type, methods, platform, seed):
                 mlp_ratio=2,
                 activation=nn.gelu,
                 drop_rate=0.2,
-                attn_drop_rate=0.2,
-                drop_path_rate=0.2,
-                key = key
+                patch_embed=PatchLinearEmbed,
+                key = key,
             )
     elif nn_type == 'mixer':
         rng_key, key = random.split(rng_key)
@@ -148,17 +152,17 @@ def main(dataset_name, nn_type, methods, platform, seed):
     else:
         raise NotImplementedError
 
+    rng_key, key = random.split(rng_key)
     if 'Flat-MAP' in methods:
         print('Flat-MAP')
-        rng_key, key = random.split(rng_key)
         output = run_inference(key, nnet, opts_regression, opts_fitting, train_ds, test_ds, reg_model=SVIRegression)
         results[nn_type]['Flat-MAP'] = output
-        jnp.savez(f'results/{dataset_name}.npz', results=results)
+        jnp.savez(f'{path_prexif}{dataset_name}.npz', results=results)
 
     tau0 = 1e-2
     method_opts_reg = {
-        'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': lr}},
-        'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': lr}},
+        'Flat-FF': {'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 5 * lr}},
+        'Tiered-FF': {'tau0': tau0, 'reduced': True, 'autoguide': 'mean-field', 'optim_kwargs': {'learning_rate': 5 * lr}},
     }
 
     method_opts_fit = {
@@ -170,6 +174,7 @@ def main(dataset_name, nn_type, methods, platform, seed):
     nnet = eqx.tree_inference(nnet, value=True)
 
     for method in ['Flat-FF', 'Tiered-FF']:
+        rng_key, key = random.split(rng_key)
         if method in methods:
             print(method)
             opts_regression = opts_regression | method_opts_reg[method]
@@ -177,14 +182,14 @@ def main(dataset_name, nn_type, methods, platform, seed):
 
             output = run_inference(key, nnet, opts_regression, opts_fitting, train_ds, test_ds, reg_model=SVIRegression)
             results[nn_type][method] = output
-            jnp.savez(f'results/{dataset_name}.npz', results=results)
+            jnp.savez(f'{path_prexif}{dataset_name}.npz', results=results)
 
     method_opts_reg = {
         'BMR-S&S':  {
         'pruning': 'spike-and-slab',
         'posterior': 'normal',
         'optim_kwargs': {
-                'learning_rate': lr
+                'learning_rate': 10 * lr
             },
         },
         'BMR-RHS': {
@@ -197,7 +202,6 @@ def main(dataset_name, nn_type, methods, platform, seed):
     opts_fitting = opts_fitting | {
         'num_iters': num_iters,
         'num_samples': 100,
-        'pruning_kwargs': {'delta': 1e-4},
         'model_kwargs': {'batch_size': batch_size, 'with_hyperprior': False}
     }
 
@@ -205,24 +209,24 @@ def main(dataset_name, nn_type, methods, platform, seed):
         rng_key, key = random.split(rng_key)
         opts_regression = opts_regression | method_opts_reg['BMR-S&S']
         state, params = run_inference(
-            key, nnet, opts_regression, opts_fitting | {'warmup_iters': 100_000}, train_ds, test_ds, reg_model=BMRRegression
+            key, nnet, opts_regression, opts_fitting | {'warmup_iters': num_iters}, train_ds, test_ds, reg_model=BMRRegression
         )
 
     for method in ['BMR-S&S', 'BMR-RHS']:
+        rng_key, key = random.split(rng_key)
         if method in methods:
             print(method)
             opts_regression = opts_regression | method_opts_reg[method]
             opts_fitting = opts_fitting | {'state': deepcopy(state), 'params': deepcopy(params)}
 
-            rng_key, key = random.split(rng_key)
             output = run_inference(key, nnet, opts_regression, opts_fitting, train_ds, test_ds, reg_model=BMRRegression)
             results[nn_type][method] = output
-            jnp.savez(f'results/{dataset_name}.npz', results=results)
+            jnp.savez(f'{path_prexif}{dataset_name}.npz', results=results)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Bayesian deep neural networks training")
-    parser.add_argument("-n", "--networks", nargs='+', default=['mlp'], type=str)
+    parser.add_argument("-n", "--networks", nargs='+', default=['mlp', 'lenet', 'vit', 'mixer'], type=str)
     parser.add_argument("--device", nargs='?', default='gpu', type=str)
     parser.add_argument("--seed", nargs='?', default=137, type=int)
     parser.add_argument("-ds", "--data-set", nargs='?', default='fashion_mnist', type=str)

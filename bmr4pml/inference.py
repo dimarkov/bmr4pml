@@ -112,7 +112,13 @@ def fit_and_test(regression, train_ds, test_ds, opts):
     model_kwargs = opts['model_kwargs']
     test_kwargs = model_kwargs | {'batch_size': None, 'inference': True}
     
-    svi = SVI(model, guide, optimizer, loss)
+    N = len(train_ds['label'])
+    svi = SVI(
+        handlers.scale(model, 1 / N), 
+        handlers.scale(guide, 1 / N), 
+        optimizer, 
+        loss
+    )
 
     key, _key = jr.split(key)
     x = train_ds['image']
@@ -133,8 +139,8 @@ def fit_and_test(regression, train_ds, test_ds, opts):
                 key, svi, state, params, num_iters, x, y=y, **model_kwargs
             )
             
-            losses.append(loss)
-            avg_loss = np.nanmean(loss)
+            losses.append(N * lax.stop_gradient(loss) )
+            avg_loss = np.nanmean(N * loss)
             t.set_postfix_str(
                 "init loss: {:.4f}, avg. loss [epoch {}]: {:.4f}".format(
                     losses[0][0], i, avg_loss
@@ -142,13 +148,13 @@ def fit_and_test(regression, train_ds, test_ds, opts):
                 refresh=False,
             )
             key, _key = jr.split(key)
-            cpu_params = device_put(params, dev2)
+            cpu_params = lax.stop_gradient(device_put(params, dev2))
 
             pred = Predictive(guide, params=cpu_params, num_samples=num_samples)
             samples = pred(_key, cpu_x_test, y=cpu_y_test, **test_kwargs)
             pred = Predictive(model, posterior_samples=samples, return_sites=['probs'])
             samples = pred(_key, cpu_x_test, y=cpu_y_test, **test_kwargs) | samples
-            results.append( tests(model, samples, cpu_x_test, cpu_y_test, **test_kwargs) )
+            results.append( lax.stop_gradient( tests(model, samples, cpu_x_test, cpu_y_test, **test_kwargs) ) )
 
     results = jtu.tree_map(lambda *args: np.stack(list(args)), *tuple(results))
     results['losses'] = np.stack(losses)
@@ -160,7 +166,7 @@ def fit_and_test(regression, train_ds, test_ds, opts):
     
     return results
 
-def pruned_fraction(gammas, params, delta=1e-15, **kwargs):
+def pruned_fraction(gammas, params, delta=1e-7, **kwargs):
     count = 0
     size = 0
     for l in range(len(gammas) - 1):
@@ -196,7 +202,14 @@ def fit_and_test(regression, train_ds, test_ds, opts):
     model_kwargs = opts['model_kwargs']
     test_kwargs = model_kwargs | {'batch_size': None, 'inference': True}
 
-    svi = SVI(model, guide, optimizer, loss)
+
+    N = len(train_ds['label'])
+    svi = SVI(
+        handlers.scale(model, 1 / N), 
+        handlers.scale(guide, 1 / N), 
+        optimizer, 
+        loss
+    )
 
     key, _key = jr.split(key)
     x = train_ds['image']
@@ -228,8 +241,8 @@ def fit_and_test(regression, train_ds, test_ds, opts):
                 key, svi, state, params, num_iters, x, y=y, **model_kwargs
             )
             
-            losses.append(loss)
-            avg_loss = np.nanmean(loss)
+            losses.append(N * loss)
+            avg_loss = np.nanmean(N * loss)
             t.set_postfix_str(
                 "init loss: {:.4f}, avg. loss [epoch {}]: {:.4f}".format(
                     losses[0][0], i, avg_loss
