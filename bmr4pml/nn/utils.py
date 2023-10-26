@@ -86,7 +86,7 @@ class MlpProjection(eqx.Module):
         out_features: int = None,
         lin_layer: nn.Linear = nn.Linear,
         act_layer: Callable = None,
-        drop: Union[float, Tuple[float]] = 0.0,
+        drop_rate: Union[float, Tuple[float]] = 0.0,
         *,
         key: PRNGKeyArray = None
     ):
@@ -104,7 +104,7 @@ class MlpProjection(eqx.Module):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        drop_probs = drop if isinstance(drop, tuple) else (drop, drop)
+        drop_probs = drop_rate if isinstance(drop_rate, tuple) else (drop_rate, drop_rate)
         keys = jrandom.split(key, 2)
         self.fc1 = lin_layer(in_features, hidden_features, key=keys[0])
         self.act = act_layer

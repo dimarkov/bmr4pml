@@ -162,5 +162,4 @@ cython_debug/
 
 # Data 
 *.npz
-
-results
+*.pdf

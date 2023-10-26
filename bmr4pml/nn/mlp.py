@@ -203,6 +203,6 @@ class MlpMixer(Module):
         for mixer in self.mixers:
             x = mixer(x)
 
-        x = self.norm(x)
+        x = vmap(self.norm)(x)
         x = jnp.mean(x, axis=-2)
         return self.fc(x)
