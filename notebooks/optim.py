@@ -1,9 +1,11 @@
 import functools
-from typing import Any, Callable, NamedTuple, Optional, Union
+from typing import Any, NamedTuple, Optional, Union
 
 import chex
 import jax
 import jax.numpy as jnp
+
+from jax import random as jr
 
 from optax._src import base
 from optax._src import combine
@@ -26,13 +28,12 @@ def bias_correction(moment, decay, count):
   bias_correction_ = 1 - decay**count
 
   # Perform division in the original precision.
-  return jax.tree_util.tree_map(
-      lambda t: t / bias_correction_.astype(t.dtype), moment)
+  return jax.tree_util.tree_map(lambda t: t / bias_correction_.astype(t.dtype), moment)
 
-def update_moment(updates, moments, means, decay, lam, order):
+def update_moment(updates, moments, means, decay, lam):
   """Compute the exponential moving average of the `order`-th moment."""
   return jax.tree_util.tree_map(
-      lambda g, t, mu: (1 - decay) * (g ** order + mu * lam) + decay * t, updates, moments, means)
+      lambda g, t, mu: (1 - decay) * (g + mu * lam) + decay * t, updates, moments, means)
 
 
 def update_moment_per_elem_norm(updates, moments, decay, order):
@@ -52,22 +53,37 @@ def update_moment_per_elem_norm(updates, moments, decay, order):
       lambda g, t: (1 - decay) * orderth_norm(g) + decay * t, updates, moments)
 
 
+def update_second_moment(updates, moments, noise, decay, N, lam):
+  """Compute the EMA of the `order`-th moment of the element-wise norm."""
+
+  γ = 1 - decay
+  s = jax.tree_util.tree_map(
+      lambda g, s, ε: jnp.exp( jnp.log(s) + γ * (g * ε * jnp.sqrt(N * (s + lam)) - s ) ), 
+      updates, 
+      moments, 
+      noise
+    )
+
+  return s
+
 class ScaleByState(NamedTuple):
   """State for the algorithms."""
+  key: chex.PRNGKey
   count: chex.Array  # shape=(), dtype=jnp.int32.
   m: base.Updates
   s: base.Updates
+  ε: base.Updates
 
 
-def scale_by_vadam(
+def scale_by_von(
+    key: chex.PRNGKey,
     scaled_prior_precision: float,
     scaled_init_precision: float,
+    train_set_size: int,
     b1: float = 0.9,
     b2: float = 0.999,
     eps_root: float = 0.0,
-    m_dtype: Optional[chex.ArrayDType] = None,
-    *,
-    train_set_size: int = 1
+    m_dtype: Optional[chex.ArrayDType] = None
 ) -> base.GradientTransformation:
   """Rescale updates according to the Adam algorithm.
 
@@ -90,18 +106,18 @@ def scale_by_vadam(
 
   m_dtype = utils.canonicalize_dtype(m_dtype)
 
-  s_init = max(0., scaled_init_precision - scaled_prior_precision)
+  s_init = max(1e-16, scaled_init_precision - scaled_prior_precision)
   t_lam = scaled_prior_precision
 
   def init_fn(params):
-    m = jax.tree_util.tree_map(  # First moment
-        lambda t: jnp.zeros_like(t, dtype=m_dtype), params)
-    s = jax.tree_util.tree_map(lambda x: s_init * jnp.ones_like(x), params)  # Second moment
-    return ScaleByState(count=jnp.zeros([], jnp.int32), m=m, s=s)
+    m = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=m_dtype), params)  # First moment
+    s = jax.tree_util.tree_map(lambda t: s_init * jnp.ones_like(t), params)  # Second moment
+    ε = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=m_dtype), params) # noise
+    return ScaleByState(count=jnp.zeros([], jnp.int32), m=m, s=s, ε=ε)
 
   def update_fn(updates, state, params):
-    m = update_moment(updates, state.m, params, b1, t_lam, 1)
-    s = update_moment_per_elem_norm(updates, state.s, b2, 2)
+    m = update_moment(updates, state.m, params, b1, t_lam)
+    s = update_second_moment(updates, state.s, state.ε, b2, train_set_size, t_lam)
     count_inc = numerics.safe_int32_increment(state.count)
     m_hat = bias_correction(m, b1, count_inc)
     s_hat = bias_correction(s, b2, count_inc)
@@ -109,14 +125,95 @@ def scale_by_vadam(
         lambda m, v: m / (jnp.sqrt(v + eps_root) + t_lam), m_hat, s_hat)
     
     m = utils.cast_tree(m, m_dtype)
-    return updates, ScaleByState(count=count_inc, m=m, s=s)
+    return updates, ScaleByState(count=count_inc, m=m, s=s, ε=state.ε)
+
+  return base.GradientTransformation(init_fn, update_fn)
+
+def scale_by_vadam(
+    key: chex.PRNGKey,
+    scaled_prior_precision: float,
+    scaled_init_precision: float,
+    train_set_size: int,
+    b1: float = 0.9,
+    b2: float = 0.999,
+    eps_root: float = 0.0,
+    m_dtype: Optional[chex.ArrayDType] = None
+) -> base.GradientTransformation:
+  """Rescale updates according to the Adam algorithm.
+
+  References:
+    [Kingma et al, 2014](https://arxiv.org/abs/1412.6980)
+
+  Args:
+    scaled_prior_precision: prior precision on parameters divided by the number of data points.
+    scaled_initi_precision: initial precision for variational distribution q divided by the number of data points.
+    b1: Decay rate for the exponentially weighted average of grads.
+    b2: Decay rate for the exponentially weighted average of squared grads.
+    eps_root: Term added to the denominator inside the square-root to improve
+      numerical stability when backpropagating gradients through the rescaling.
+    m_dtype: Optional `dtype` to be used for the first order accumulator; if
+      `None` then the `dtype` is inferred from `params` and `updates`.
+
+  Returns:
+    A `GradientTransformation` object.
+  """
+
+  m_dtype = utils.canonicalize_dtype(m_dtype)
+
+  s_init = max(1e-16, scaled_init_precision - scaled_prior_precision)
+  scale_init = jnp.sqrt( 1 / (train_set_size * scaled_init_precision) )
+  t_lam = scaled_prior_precision
+
+  def init_fn(params):
+    mus, aux = jax.tree_util.tree_flatten(params)
+    m = []
+    s = []
+    ε = []
+    keys = jr.split(key, len(mus) + 1)
+    for p, _key in zip(mus, keys[:-1]):
+      m.append( jnp.zeros_like(p, dtype=m_dtype) )
+      s.append( s_init * jnp.ones_like(p) )
+      ε.append( scale_init * jr.normal(_key, shape=p.shape) )
+
+    m = jax.tree_util.tree_unflatten(aux, m)  # First moment
+    s = jax.tree_util.tree_unflatten(aux, s)  # Second moment
+    ε = jax.tree_util.tree_unflatten(aux, ε)  # Noise
+    return ScaleByState(key=keys[-1], count=jnp.zeros([], jnp.int32), m=m, s=s, ε=ε)
+
+  def update_fn(updates, state, params):
+    m = update_moment(updates, state.m, params, b1, t_lam)
+    s = update_moment_per_elem_norm(updates, state.s, b2, 2)
+    count_inc = numerics.safe_int32_increment(state.count)
+    m_hat = bias_correction(m, b1, count_inc)
+    s_hat = bias_correction(s, b2, count_inc)
+
+    m_hat_flat, aux = jax.tree_util.tree_flatten(m_hat)
+    s_hat_flat, _ = jax.tree_util.tree_flatten(s_hat)
+    s_flat, _ = jax.tree_util.tree_flatten(s)
+
+    key = state.key
+    updates = []
+    ε = []
+    for x, y, π, _key in zip(m_hat_flat, s_hat_flat, s_flat, jr.split(key, len(m_hat_flat))):
+      updates.append( x / (jnp.sqrt(y + eps_root) + t_lam) )
+      scale = jnp.sqrt( 1 / (train_set_size * (π + t_lam)) )
+      ε.append( scale * jr.normal(_key, shape=scale.shape))
+    
+    updates = jax.tree_util.tree_unflatten(aux, updates)
+    ε = jax.tree_util.tree_unflatten(aux, ε)
+    m = utils.cast_tree(m, m_dtype)
+    key, _ = jr.split(_key)
+
+    return updates, ScaleByState(key=key, count=count_inc, m=m, s=s, ε=ε)
 
   return base.GradientTransformation(init_fn, update_fn)
 
 
 def scale_by_vadabelief(
+    key: chex.PRNGKey,
     scaled_prior_precision: float,
     scaled_init_precision: float,
+    train_set_size: int,
     b1: float = 0.9,
     b2: float = 0.999,
     eps_root: float = 1e-16,
@@ -141,6 +238,7 @@ def scale_by_vadabelief(
   m_dtype = utils.canonicalize_dtype(m_dtype)
 
   s_init = max(0., scaled_init_precision - scaled_prior_precision)
+  scale_init = jnp.sqrt( 1 / (train_set_size * scaled_init_precision) )
   t_lam = scaled_prior_precision
 
   def init_fn(params):
@@ -148,21 +246,50 @@ def scale_by_vadabelief(
         lambda t: jnp.zeros_like(t, dtype=m_dtype), params)
     s = jax.tree_util.tree_map(lambda x: s_init * jnp.ones_like(x), params)  # Second moment
     return ScaleByState(count=jnp.zeros([], jnp.int32), m=m, s=s)
+  
+  def init_fn(params):
+    mus, aux = jax.tree_util.tree_flatten(params)
+    m = []
+    s = []
+    ε = []
+    keys = jr.split(key, len(mus) + 1)
+    for p, _key in zip(mus, keys[:-1]):
+      m.append( jnp.zeros_like(p, dtype=m_dtype) )
+      s.append( s_init * jnp.ones_like(p) )
+      ε.append( scale_init * jr.normal(_key, shape=p.shape) )
+
+    m = jax.tree_util.tree_unflatten(aux, m)  # First moment
+    s = jax.tree_util.tree_unflatten(aux, s)  # Second moment
+    ε = jax.tree_util.tree_unflatten(aux, ε)  # Noise
+    return ScaleByState(key=keys[-1], count=jnp.zeros([], jnp.int32), m=m, s=s, ε=ε)
 
   def update_fn(updates, state, params):
-    m = update_moment(updates, state.m, params, b1, t_lam, 1)
-
+    m = update_moment(updates, state.m, params, b1, t_lam)
     prediction_error = jax.tree_util.tree_map(lambda g, m: g - m, updates, state.m)
     s = update_moment_per_elem_norm(prediction_error, state.s, b2, 2)
     s = jax.tree_util.tree_map(lambda v: v + eps_root, s)
     count_inc = numerics.safe_int32_increment(state.count)
     m_hat = bias_correction(m, b1, count_inc)
     s_hat = bias_correction(s, b2, count_inc)
-    updates = jax.tree_util.tree_map(
-        lambda m, v: m / (jnp.sqrt(v) + t_lam), m_hat, s_hat)
+
+    m_hat_flat, aux = jax.tree_util.tree_flatten(m_hat)
+    s_hat_flat, _ = jax.tree_util.tree_flatten(s_hat)
+    s_flat, _ = jax.tree_util.tree_flatten(s)
+
+    key = state.key
+    updates = []
+    ε = []
+    for x, y, π, _key in zip(m_hat_flat, s_hat_flat, s_flat, jr.split(key, len(m_hat_flat))):
+      updates.append( x / (jnp.sqrt(y + eps_root) + t_lam) )
+      scale = jnp.sqrt( 1 / (train_set_size * (π + t_lam)) )
+      ε.append( scale * jr.normal(_key, shape=scale.shape))
     
+    updates = jax.tree_util.tree_unflatten(aux, updates)
+    ε = jax.tree_util.tree_unflatten(aux, ε)
     m = utils.cast_tree(m, m_dtype)
-    return updates, ScaleByState(count=count_inc, m=m, s=s)
+    key, _ = jr.split(_key)
+
+    return updates, ScaleByState(key=key, count=count_inc, m=m, s=s, ε=ε)
 
   return base.GradientTransformation(init_fn, update_fn)
 
@@ -174,9 +301,11 @@ def _scale_by_learning_rate(learning_rate: ScalarOrSchedule, flip_sign=True):
   return transform.scale(m * learning_rate)
 
 def vadam(
+    key: chex.PRNGKey,
     learning_rate: ScalarOrSchedule,
     t_lam: float,
-    t_init: float, 
+    t_init: float,
+    N: int, 
     b1: float = 0.9,
     b2: float = 0.999,
     eps_root: float = 0.0,
@@ -217,9 +346,11 @@ def vadam(
     Khan et al, 2018: https://arxiv.org/abs/1806.04854
 
   Args:
+    key: Random number seed.
     learning_rate: A fixed global scaling factor.
     t_lam: Prior precision devided by the number of data points in the training set.
     t_init: Initial precision of the variational posterior q devided by the number of data points in the training set.
+    N: Number of data points in the training set.
     b1: Exponential decay rate to track the first moment of past gradients.
     b2: Exponential decay rate to track the second moment of past gradients.
     eps_root: A small constant applied to denominator inside the square root (as
@@ -232,14 +363,16 @@ def vadam(
     The corresponding `GradientTransformation`.
   """
   return combine.chain(
-      scale_by_vadam(t_lam, t_init, b1=b1, b2=b2, eps_root=eps_root, m_dtype=m_dtype),
+      scale_by_vadam(key, t_lam, t_init, N, b1=b1, b2=b2, eps_root=eps_root, m_dtype=m_dtype),
       _scale_by_learning_rate(learning_rate),
   )
 
 def vadabelief(
+    key: chex.PRNGKey,
     learning_rate: ScalarOrSchedule,
     t_lam: float,
-    t_init: float, 
+    t_init: float,
+    N: int, 
     b1: float = 0.9,
     b2: float = 0.999,
     eps_root: float = 1e-16,
@@ -296,6 +429,7 @@ def vadabelief(
   """
   return combine.chain(
       scale_by_vadabelief(
-          t_lam, t_init, b1=b1, b2=b2, eps_root=eps_root, m_dtype=m_dtype),
+          key, t_lam, t_init, N, b1=b1, b2=b2, eps_root=eps_root, m_dtype=m_dtype
+        ),
       _scale_by_learning_rate(learning_rate),
   )
