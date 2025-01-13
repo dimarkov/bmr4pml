@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bmr4pml"
+version = "0.1.0"
+description = "Bayesian model reduction for probabilistic machine learning"
+authors = [{name = "Dimitrije Markovic <5038100+dimarkov@users.noreply.github.com>"}]
+license = {text = "MIT"}
+dependencies = [
+    "jax>=0.4.38",
+    "optax>=0.2.4",
+    "jaxtyping>=0.2.36"
+    "numpyro>=0.15",
+    'optax',
+    'equinox',
+    'tfds-nightly',
+    'tf-nightly-cpu',
+    'tfp-nightly'
+]
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.black]
+line-length = 120

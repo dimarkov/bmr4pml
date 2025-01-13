@@ -9,7 +9,7 @@ install_requires = \
     'numpyro',
     'optax',
     'equinox',
-    'tensorflow-datasets',
+    'tfds-nightly',
     'tf-nightly-cpu',
     'tfp-nightly'
 ]
@@ -34,7 +34,6 @@ classifiers=[
 
     # Specify the Python versions you support here. In particular, ensure
     # that you indicate whether you support Python 2, Python 3 or both.
-    'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',
 ]
 
@@ -52,9 +51,7 @@ setup_kwargs = {
     'packages': packages,
     'install_requires': install_requires,
     'extras_require': extras_require,
-    'setup_requires': ['pytest-runner', 'flake8'],
-    'tests_require': ['pytest'],
-    'python_requires': '>=3.10',
+    'python_requires': '>=3.11',
 }
 
 
