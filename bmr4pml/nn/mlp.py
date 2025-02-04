@@ -115,8 +115,8 @@ class _MixerBlock(Module):
         key: PRNGKeyArray
     ):
         super().__init__()
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm1 = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.norm2 = nn.LayerNorm(embed_dim, eps=1e-6, use_weight=False, use_bias=False)
 
         keys = jr.split(key, 2)
         self.blocks = [
@@ -140,6 +140,7 @@ class MlpMixer(Module):
     norm: nn.LayerNorm
     patch_embed: Module
     fc: nn.Linear
+    augmentation: Callable
 
     def __init__(
             self,
@@ -153,12 +154,15 @@ class MlpMixer(Module):
             num_blocks=8,
             activation=jnn.gelu,
             patch_embed=PatchConvEmbed,
+            augmentation=None,
             *,
             key: PRNGKeyArray
         ):
         super().__init__()
         embed_hidden_dim = hidden_dim_ratio * tokens_hidden_dim
         keys = jr.split(key, num_blocks + 2)
+
+        self.augmentation = augmentation if augmentation is not None else lambda key, x: x
 
         self.patch_embed = patch_embed(
             img_size=img_size,
@@ -181,7 +185,7 @@ class MlpMixer(Module):
             for i in range(num_blocks)
         ]
 
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6, use_bias=False, use_weight=False)
 
         # Classifier head
         self.fc = nn.Linear(embed_dim, num_classes, key=keys[-1])
@@ -198,6 +202,11 @@ class MlpMixer(Module):
 
         A JAX array with shape `(out_size,)`.
         """
+        if key is not None:
+            x = self.augmentation(key, x).transpose(2, 0, 1)
+        else:
+            x = x.transpose(2, 0, 1)
+        
         x = self.patch_embed(x)
         # x shape is (h w) embed_dim
         for mixer in self.mixers:
@@ -205,4 +214,139 @@ class MlpMixer(Module):
 
         x = vmap(self.norm)(x)
         x = jnp.mean(x, axis=-2)
+        return self.fc(x)
+    
+
+class _StandardMlpBlock(Module):
+    norm: Callable
+    activation: Callable
+    linear: nn.Linear
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        activation,
+        *,
+        key: PRNGKeyArray
+    ):
+        super().__init__()
+        self.activation = activation
+        self.linear = nn.Linear(in_features=in_features, out_features=out_features, key=key)
+        self.norm = nn.LayerNorm(in_features, use_weight=False, use_bias=False)
+
+
+    def __call__(self, x):
+        x = self.norm(x)
+        x = self.linear(x)
+        return self.activation(x)
+    
+
+class _BottlneckMlpBlock(Module):
+    block: _StandardMlpBlock
+    linear: nn.Linear
+
+    def __init__(
+        self,
+        in_features,
+        activation,
+        ratio=4,
+        *,
+        key: PRNGKeyArray
+    ):
+        super().__init__()
+        keys = jr.split(key, 2)
+        self.block = _StandardMlpBlock(in_features, ratio * in_features, activation, key=keys[0])
+        self.linear = nn.Linear(in_features=ratio * in_features, out_features=in_features, key=keys[1])
+
+    def __call__(self, x):
+        y = self.block(x)
+        return x + self.linear(y)
+    
+
+class DeepMlp(Module):
+    """Deep Standard and Inverted Bottlneck MLP pofted from https://github.com/gregorbachmann/scaling_mlps."""
+    layers: Union[Sequence[_BottlneckMlpBlock],Sequence[_StandardMlpBlock]]
+    linear_embed: nn.Linear
+    fc: nn.Linear
+    augmentation: Callable
+    inference: bool
+
+    def __init__(
+            self,
+            img_size=32,
+            in_channels=1,
+            embed_dim=256,
+            hidden_dim_ratio=4,
+            num_classes=10,
+            num_blocks=8,
+            activation=jnn.gelu,
+            augmentation=None,
+            type="bottleneck",
+            inference=False,
+            *,
+            key: PRNGKeyArray
+        ):
+        super().__init__()
+        keys = jr.split(key, num_blocks + 2)
+
+        self.inference = inference
+
+        self.augmentation = augmentation if augmentation is not None else lambda key, x: x
+        
+        img_size = (img_size, img_size) if isinstance(img_size, int) else img_size
+        in_features = prod(img_size) * in_channels
+        self.linear_embed = nn.Linear(in_features=in_features, out_features=embed_dim, key=keys[-1])
+        
+        if type == "bottleneck":
+            self.layers = [
+                _BottlneckMlpBlock(
+                    embed_dim,
+                    activation,
+                    ratio=hidden_dim_ratio,
+                    key=keys[i]
+                ) 
+                for i in range(num_blocks)
+            ]
+        elif type == "standard":
+            self.layers = [
+                _StandardMlpBlock(
+                    embed_dim, 
+                    embed_dim,
+                    activation, 
+                    key=keys[i]
+                ) 
+                for i in range(num_blocks)
+            ]
+        else:
+            raise NotImplementedError
+
+        # Classifier head
+        self.fc = nn.Linear(embed_dim, num_classes, key=keys[-2])
+
+    def __call__(
+        self, x: Array, *, key: Optional[PRNGKeyArray] = None
+    ) -> Array:
+        """**Arguments:**
+
+        - `x`: A JAX array with shape `img_size + (num_channels,)`.
+        - `key`: A `jax.random.PRNGKey` not used; present for syntax consistency. (Keyword only argument.)
+
+        **Returns:**
+
+        A JAX array with shape `(num_classes,)`.
+        """
+        if self.inference:
+            x = x.reshape(-1)
+        else:
+            if key is not None:
+                x = self.augmentation(key, x).reshape(-1)
+            else:
+                x = x.reshape(-1)
+        
+        x = self.linear_embed(x)
+        # x shape is embed_dim
+        for layer in self.layers:
+            x = layer(x)
+
         return self.fc(x)
