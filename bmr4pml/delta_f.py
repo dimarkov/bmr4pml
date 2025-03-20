@@ -72,3 +72,9 @@ def ΔF_mf(mu, pi, gamma_sqr, sigma_sqr=1):
     df += jnp.inner(_mu, t_mu) / 2
     
     return df, t_mu, jnp.sqrt(t_sig_sqr)
+
+def ΔF_mf_delta(mu, scale, prior_scale=1.):
+    # change in the variational free energy when going from normal prior 
+    # to delta prior, in the case of a fully factorized mean-field approximation
+
+    return (jnp.log(prior_scale) - jnp.log(scale)) - .5 * jnp.square(mu / scale)
