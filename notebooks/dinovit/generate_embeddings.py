@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-# do not prealocate memory
+# do not preallocate memory
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
