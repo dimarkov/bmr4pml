@@ -18,14 +18,23 @@ from datetime import datetime
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
-# Set cuda device to use
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+# Optionally, set or remove CUDA_VISIBLE_DEVICES based on your hardware.
+# For a multi-GPU system you might set:
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+# However, if you want to automatically adapt you can remove this line and let JAX detect available GPUs.
+
+# Dynamically determine available GPUs and assign them for computation and storage
+available_devices = devices()
+if len(available_devices) > 1:
+    compute_device = available_devices[1]
+    store_device = available_devices[0]
+    print(f"Using multiple GPUs: compute on {compute_device}, store on {store_device}")
+else:
+    compute_device = store_device = available_devices[0]
+    print(f"Single GPU detected: using {compute_device} for both compute and storage.")
 
 jdl.manual_seed(6573)
 key = jr.PRNGKey(1236)
-device0 = devices()[0]
-device1 = devices()[1]
 
 # Model configurations
 DINOV2_MODELS = {
