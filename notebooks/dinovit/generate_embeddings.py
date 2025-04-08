@@ -14,18 +14,27 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-# do not prealocate memory
+# Do not preallocate memory
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
-# Set cuda device to use
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+# Optionally, set or remove CUDA_VISIBLE_DEVICES based on your hardware.
+# For a multi-GPU system you might set:
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+# However, if you want to automatically adapt you can remove this line and let JAX detect available GPUs.
+
+# Dynamically determine available GPUs and assign them for computation and storage
+available_devices = devices()
+if len(available_devices) > 1:
+    compute_device = available_devices[1]
+    store_device = available_devices[0]
+    print(f"Using multiple GPUs: compute on {compute_device}, store on {store_device}")
+else:
+    compute_device = store_device = available_devices[0]
+    print(f"Single GPU detected: using {compute_device} for both compute and storage.")
 
 jdl.manual_seed(6573)
 key = jr.PRNGKey(1236)
-device0 = devices()[0]
-device1 = devices()[1]
 
 # Model configurations
 DINOV2_MODELS = {
@@ -97,7 +106,7 @@ def process_batch(model, batch, key, transform, device_compute, device_store):
     if batch['image'].ndim != 4:
         return None, None
     
-    # Prepare images
+    # Prepare images on the compute device
     img = device_put(batch['image'], device_compute).astype(jnp.float32) / 255.0
     keys = device_put(jr.split(key, img.shape[0]), device_compute)
     trans_img = jnp.moveaxis(
@@ -105,7 +114,7 @@ def process_batch(model, batch, key, transform, device_compute, device_store):
         -1, -3
     )
     
-    # Get features and pooled output
+    # Get features and pooled output; compute on compute device then move result to store device
     features = device_put(vmap(model.forward_features)(trans_img, keys), device_store)
     pooled = device_put(vmap(model)(trans_img), device_store)
     
@@ -154,8 +163,8 @@ def generate_embeddings(output_dir: str = "embeddings", dataset_name: str = "tin
     for model_size, model_id in DINOV2_MODELS.items():
         print(f"\nProcessing {model_size} model...")
         
-        # Load model
-        model = eqx.nn.inference_mode(device_put(load_model(cls="vit", identifier=model_id), device1))
+        # Load model onto the compute device
+        model = eqx.nn.inference_mode(device_put(load_model(cls="vit", identifier=model_id), compute_device))
         
         # Process train and test splits
         for split in ['train', 'test']:
@@ -163,7 +172,7 @@ def generate_embeddings(output_dir: str = "embeddings", dataset_name: str = "tin
             dataloader = setup_data_loader(split, metadata['batch_size'][model_size], dataset_name)
             
             for batch_idx, batch in enumerate(tqdm(iter(dataloader), total=len(dataloader))):
-                features, pooled = process_batch(model, batch, key, transform, device1, device0)
+                features, pooled = process_batch(model, batch, key, transform, compute_device, store_device)
                 save_batch(features, pooled, batch_idx, batch['label'], paths, model_size, split)
                 
         # Update metadata with model-specific information
@@ -177,7 +186,6 @@ def generate_embeddings(output_dir: str = "embeddings", dataset_name: str = "tin
         json.dump(metadata, f, indent=2)
 
 if __name__ == "__main__":
+    # Example usage:
     # generate_embeddings(dataset_name="benjamin-paine/imagenet-1k-256x256")
     generate_embeddings(dataset_name="slegroux/tiny-imagenet-200-clean")
-
-    
