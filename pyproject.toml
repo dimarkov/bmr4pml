@@ -1,0 +1,25 @@
+[project]
+name = "bmr4pml"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "augmax>=0.3.4",
+    "blrax",
+    "equinox>=0.12.1",
+    "ipykernel>=6.29.5",
+    "jax[cuda]>=0.5.3",
+    "matplotlib>=3.10.1",
+    "mlpox",
+    "numpyro>=0.18.0",
+    "optax>=0.2.4",
+    "seaborn>=0.13.2",
+    "tensorflow>=2.19.0",
+    "tensorflow-datasets>=4.9.8",
+    "tensorflow-probability>=0.25.0",
+]
+
+[tool.uv.sources]
+blrax = { git = "https://github.com/dimarkov/blrax.git", rev = "main" }
+mlpox = { git = "https://github.com/dimarkov/mlpox.git", rev = "main" }
