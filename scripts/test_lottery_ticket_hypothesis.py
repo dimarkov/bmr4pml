@@ -237,6 +237,7 @@ def main(args, network, m_config, o_config):
     dataset = args.dataset
     seed = args.seed
     num_epochs = args.epochs
+    num_warmup_epochs = args.warmup
     batch_size = args.batch_size
     save_every = args.save_every
     platform = args.device
@@ -248,6 +249,7 @@ def main(args, network, m_config, o_config):
 
     datasize = len(train_ds['image'])
     num_iters = num_epochs * datasize // batch_size
+    warmup_steps = num_warmup_epochs * datasize // batch_size
 
     # define data augmentation
     img_size = m_config['img_size']
@@ -332,29 +334,52 @@ def main(args, network, m_config, o_config):
         vals = jtu.tree_map(lambda x: x[-1], metrics)
         print(i, nn_type, [(name, f'{vals[name].item():.3f}') for name in vals if name != 'pf'] + [('pruned_frac', f'{total_pf:.3f}')])
 
-    for i in [1, 2, 4, 8]:
+    key, _key = jr.split(key)
+    ft_nnet, opt_state, _, metrics = run_training(
+        _key,
+        trained_nnet, 
+        optim,
+        augdata, 
+        train_ds, 
+        test_ds,
+        opt_state=opt_state,
+        mask=mask,
+        mc_samples=mc_samples,
+        num_epochs=50,
+        batch_size=batch_size,
+        start_pruning=51,
+        alpha=args.label_smooth,
+    )
+
+    #TODO: save model checkpoint, opt_state, and test metrics
+    to_save = {"nnet": nnet, "opt_state": opt_state, "metrics": metrics}
+    vals = jtu.tree_map(lambda x: x[-1], metrics)
+    print("fine tuned for 50 epochs", nn_type, [(name, f'{vals[name].item():.3f}') for name in vals if name != 'pf'])
+
+    opt_state = None
+    lt_nnet = nnet
+    for i in range(num_epochs // 50):
         key, _key = jr.split(key)
         lt_nnet, opt_state, _, metrics = run_training(
             _key,
-            nnet, 
+            lt_nnet, 
             optim,
             augdata, 
             train_ds, 
             test_ds,
-            opt_state=None,
+            opt_state=opt_state,
             mask=mask,
             mc_samples=mc_samples,
-            num_epochs=num_epochs,
-            batch_size=i*batch_size,
-            start_pruning=num_epochs+1,
-            alpha=args.label_smooth,
-            pi=0.5
+            num_epochs=50,
+            batch_size=batch_size,
+            start_pruning=51,
+            alpha=args.label_smooth
         )
 
         #TODO: save model checkpoint, opt_state, and test metrics
         to_save = {"nnet": nnet, "opt_state": opt_state, "metrics": metrics}
         vals = jtu.tree_map(lambda x: x[-1], metrics)
-        print("lt_nnet", nn_type, i * batch_size, [(name, f'{vals[name].item():.3f}') for name in vals if name != 'pf'])
+        print(i, "lt_nnet", nn_type, [(name, f'{vals[name].item():.3f}') for name in vals if name != 'pf'])
 
 
 if __name__ == '__main__':
@@ -366,6 +391,7 @@ if __name__ == '__main__':
     parser.add_argument("-ds", "--dataset", nargs='?', default='cifar10', type=str)
     parser.add_argument("--save-every", nargs='?', default=10, type=int)
     parser.add_argument("-e", "--epochs", nargs='?', default=100, type=int)
+    parser.add_argument("-w", "--warmup", nargs='?', default=10, type=int)
     parser.add_argument("-bs", "--batch-size", nargs='?', default=64, type=int)
     parser.add_argument("-ls", "--label-smooth", nargs='?', default=0.0, type=float)
     parser.add_argument("-nb", "--num-blocks", nargs='?', default=6, type=int)

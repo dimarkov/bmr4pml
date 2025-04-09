@@ -237,6 +237,7 @@ def main(args, network, m_config, o_config):
     dataset = args.dataset
     seed = args.seed
     num_epochs = args.epochs
+    num_warmup_epochs = args.warmup
     batch_size = args.batch_size
     save_every = args.save_every
     platform = args.device
@@ -248,6 +249,8 @@ def main(args, network, m_config, o_config):
 
     datasize = len(train_ds['image'])
     num_iters = num_epochs * datasize // batch_size
+    warmup_steps = num_warmup_epochs * datasize // batch_size
+
 
     # define data augmentation
     img_size = m_config['img_size']
@@ -284,7 +287,7 @@ def main(args, network, m_config, o_config):
     elif 'ivon' in o_config:
         lr_conf = o_config['lr']
         lr_conf['decay_steps'] = num_iters
-        lr_conf['warmup_steps'] = num_iters // 10
+        lr_conf['warmup_steps'] = warmup_steps
         lr_schd = optax.schedules.warmup_cosine_decay_schedule(
             **lr_conf
         )
@@ -341,6 +344,7 @@ if __name__ == '__main__':
     parser.add_argument("-ds", "--dataset", nargs='?', default='cifar10', type=str)
     parser.add_argument("--save-every", nargs='?', default=10, type=int)
     parser.add_argument("-e", "--epochs", nargs='?', default=100, type=int)
+    parser.add_argument("-w", "--warmup", nargs='?', default=10, type=int)
     parser.add_argument("-bs", "--batch-size", nargs='?', default=64, type=int)
     parser.add_argument("-ls", "--label-smooth", nargs='?', default=0.0, type=float)
     parser.add_argument("-nb", "--num-blocks", nargs='?', default=6, type=int)
