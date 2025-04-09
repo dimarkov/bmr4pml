@@ -16,6 +16,7 @@ import optax
 import augmax
 
 from functools import partial
+from math import prod
 
 from tensorflow_probability.substrates.jax.stats import expected_calibration_error as compute_ece
 from jax import random as jr, nn, vmap, lax, config
@@ -54,7 +55,7 @@ def prune_parameters(params, sigma, sparsity_prior, mask, prior_scale=1.):
         
         m = p >= .5  # keep elements for which posterior probability is larger than 1/2
         _mask.append( m )
-        _params.append( m * mu )
+        _params.append( jnp.where(m, mu, 0.) )
 
     return (
         jtu.tree_unflatten(tree_def, _params),
@@ -69,6 +70,7 @@ def run_training(
     train_ds,
     test_ds,
     opt_state=None,
+    mask=None,
     mc_samples=(),
     num_epochs=1,
     batch_size=32,
@@ -87,6 +89,7 @@ def run_training(
         train_ds: Training dataset dictionary with 'image' and 'label' keys
         test_ds: Test dataset dictionary with 'image' and 'label' keys
         opt_state: Initial optimizer state, if None it is initiated localy
+        mask: Initial mask for the model parameters
         num_epochs: Number of epochs to train
         batch_size: Batch size for training
         start_pruning: Start BMR based model pruning after given epoch
@@ -96,7 +99,7 @@ def run_training(
     
     
     params, static = eqx.partition(nnet, eqx.is_array)  # split model into params and static fields
-    mask = jtu.tree_map(lambda x: jnp.ones_like(x, jnp.bool), params)  # initialize mask
+    mask = jtu.tree_map(lambda x: jnp.ones_like(x, jnp.bool), params)  if mask is None else mask # initialize mask
     sparsity_prior = jnp.array([10 * pi, 10 * (1 - pi)])
     opt_state = optim.init(params) if opt_state is None else opt_state  # initialize optimizer state
 
@@ -173,7 +176,7 @@ def run_training(
             data
         )
 
-        start = epoch > start_pruning
+        start = epoch >= start_pruning
         select = partial(jnp.where, start)
 
         def true_fun(*args):
@@ -222,13 +225,13 @@ def run_training(
     # Run training for multiple epochs
     keys = jr.split(key, num_epochs)
     init_carry = (params, mask, opt_state)
-    (params, mask, final_opt_state), metrics = lax.scan(
+    (params, final_mask, final_opt_state), metrics = lax.scan(
         train_epoch,
         init_carry,
         (keys, jnp.arange(num_epochs))
     )
     trained_model = eqx.combine(params, static)
-    return trained_model, final_opt_state, metrics
+    return trained_model, final_opt_state, final_mask, metrics
 
 def main(args, network, m_config, o_config):
     dataset = args.dataset
@@ -294,10 +297,11 @@ def main(args, network, m_config, o_config):
 
     # run training
     opt_state = None
+    mask = None
     s_prune = args.start_bmr
     for i in range(num_epochs // save_every):
         key, _key = jr.split(key)
-        nnet, opt_state, metrics = run_training(
+        nnet, opt_state, mask, metrics = run_training(
             _key,
             nnet, 
             optim,
@@ -305,6 +309,7 @@ def main(args, network, m_config, o_config):
             train_ds, 
             test_ds,
             opt_state=opt_state,
+            mask=mask,
             mc_samples=mc_samples,
             num_epochs=save_every,
             batch_size=batch_size,
@@ -312,12 +317,19 @@ def main(args, network, m_config, o_config):
             alpha=args.label_smooth,
             pi=0.5
         )
-        s_prune = max(1, s_prune - save_every)
+        s_prune = max(0, s_prune - save_every)
+
+        total_pf = 0.
+        count = 0
+        for ms in jtu.tree_flatten(mask)[0]:
+            total_pf += jnp.sum(1 - ms)
+            count += prod(ms.shape)
+        total_pf = total_pf.item() / count
 
         #TODO: save model checkpoint, opt_state, and test metrics
         to_save = {"nnet": nnet, "opt_state": opt_state, "metrics": metrics}
         vals = jtu.tree_map(lambda x: x[-1], metrics)
-        print(i, nn_type, [(name, vals[name].item()) for name in vals if name != 'pf'])
+        print(i, nn_type, [(name, f'{vals[name].item():.3f}') for name in vals if name != 'pf'] + [('pruned_frac', f'{total_pf:.3f}')])
 
 
 if __name__ == '__main__':
@@ -333,7 +345,7 @@ if __name__ == '__main__':
     parser.add_argument("-ls", "--label-smooth", nargs='?', default=0.0, type=float)
     parser.add_argument("-nb", "--num-blocks", nargs='?', default=6, type=int)
     parser.add_argument("-ed", "--embed-dim", nargs='?', default=256, type=int)
-    parser.add_argument("-sbmr", "--start-bmr", nargs='?', default=100, type=int)
+    parser.add_argument("-sbmr", "--start-bmr", nargs='?', default=10, type=int)
     parser.add_argument("-mc", "--mc-samples", nargs='?', default=1, type=int)
 
     args = parser.parse_args()
