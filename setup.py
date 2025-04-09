@@ -9,9 +9,12 @@ install_requires = \
     'numpyro',
     'optax',
     'equinox',
+    'augmax',
     'tensorflow-datasets',
     'tf-nightly-cpu',
-    'tfp-nightly'
+    'tfp-nightly',
+    'blrax @ git+https://github.com/dimarkov/blrax.git@main',
+    'mlpox @ git+https://github.com/dimarkov/mlpox.git@main',
 ]
 
 extras_require={

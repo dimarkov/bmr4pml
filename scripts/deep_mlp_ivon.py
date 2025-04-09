@@ -19,6 +19,7 @@ from functools import partial
 
 from tensorflow_probability.substrates.jax.stats import expected_calibration_error as compute_ece
 from jax import random as jr, nn, vmap, lax, config
+from jax.scipy.special import polygamma
 import jax.tree_util as jtu
 
 from mlpox.networks import DeepMlp, MlpMixer
@@ -36,13 +37,14 @@ def prune_parameters(params, sigma, sparsity_prior, mask, prior_scale=1.):
     s_leaf = jtu.tree_leaves(sigma)
     m_leaf = jtu.tree_leaves(mask)
 
+    # update iterativly sparsity params and posterior probability of pruning
+    _sp = sparsity_prior
     _mask = []
     _params = []
     for mu, scale, msk in zip(p_leaf, s_leaf, m_leaf):
-        # update iterativly sparsity params and posterior probability of pruning
         _sp = sparsity_prior
         for _ in range(4):
-            eta = jnp.log(_sp[0]) - jnp.log(_sp[1])
+            eta = polygamma(1, _sp[0]) - polygamma(1, _sp[1])
             
             # probability of mask = 1
             p = msk * nn.sigmoid(- ΔF_mf_delta(mu, scale, prior_scale=prior_scale) + eta)
@@ -332,6 +334,7 @@ if __name__ == '__main__':
     parser.add_argument("-nb", "--num-blocks", nargs='?', default=6, type=int)
     parser.add_argument("-ed", "--embed-dim", nargs='?', default=256, type=int)
     parser.add_argument("-sbmr", "--start-bmr", nargs='?', default=100, type=int)
+    parser.add_argument("-mc", "--mc-samples", nargs='?', default=1, type=int)
 
     args = parser.parse_args()
     config.update("jax_platform_name", args.device)
@@ -357,7 +360,7 @@ if __name__ == '__main__':
         o_config = {'lion': {'learning_rate': 1e-4, 'weight_decay': 1e-5}}
     if args.optimizer == 'ivon':
         o_config = {
-            'ivon': {'s0': 1., 'h0': 1., 'mc_samples': 1, 'clip_radius': 100.},
+            'ivon': {'s0': 1., 'h0': 1., 'mc_samples': args.mc_samples, 'clip_radius': 1e3},
             'lr': {
                 'init_value': 1e-2,
                 'peak_value': 1e-1,
