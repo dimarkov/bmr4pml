@@ -292,7 +292,7 @@ def main(args, network, m_config, o_config):
 
     # run training
     opt_state = None
-    s_prune = 100
+    s_prune = args.start_bmr
     for i in range(num_epochs // save_every):
         key, _key = jr.split(key)
         nnet, opt_state, metrics = run_training(
@@ -321,7 +321,7 @@ def main(args, network, m_config, o_config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="deep MLP training")
     parser.add_argument("-o", "--optimizer", nargs='?', default='ivon', type=str)
-    parser.add_argument("-n", "--networks", nargs='+', default=['smlp', 'bml', 'mixer'], type=str)
+    parser.add_argument("-n", "--networks", nargs='+', default=['smlp', 'bmlp', 'mixer'], type=str)
     parser.add_argument("--device", nargs='?', default='gpu', type=str)
     parser.add_argument("--seed", nargs='?', default=137, type=int)
     parser.add_argument("-ds", "--dataset", nargs='?', default='cifar10', type=str)
@@ -331,9 +331,7 @@ if __name__ == '__main__':
     parser.add_argument("-ls", "--label-smooth", nargs='?', default=0.0, type=float)
     parser.add_argument("-nb", "--num-blocks", nargs='?', default=6, type=int)
     parser.add_argument("-ed", "--embed-dim", nargs='?', default=256, type=int)
-
-
-
+    parser.add_argument("-sbmr", "--start-bmr", nargs='?', default=100, type=int)
 
     args = parser.parse_args()
     config.update("jax_platform_name", args.device)
