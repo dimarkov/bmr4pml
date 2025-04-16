@@ -157,14 +157,14 @@ if __name__ == '__main__':
         }
 
     if args.optimizer == 'lion':
-        o_config = {'lion': {'learning_rate': 1e-4, 'weight_decay': 1e-5}}
+        o_config = {'lion': {'learning_rate': 1e-5, 'weight_decay': 1e-3}}
     if args.optimizer == 'ivon':
         o_config = {
             'ivon': {'s0': 1., 'h0': 1., 'mc_samples': args.mc_samples, 'clip_radius': 1e3},
             'lr': {
                 'init_value': 1e-2,
                 'peak_value': 1e-1,
-                'end_value': 1e-3
+                'end_value': 1e-4
             }
         }
 
